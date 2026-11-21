@@ -4,6 +4,7 @@ import pytest
 
 from living_kb.identity import canonical_id, normalize_url
 from living_kb.sources.chunking import chunk_text
+from living_kb.sources.feed import parse_feed
 from living_kb.sources.publications import load_publications
 
 
@@ -47,3 +48,17 @@ def test_canonical_id_accepts_encoded_post_slugs() -> None:
 def test_chunking_rejects_invalid_sizes(chunk_size: int, chunk_overlap: int) -> None:
     with pytest.raises(ValueError):
         chunk_text("some text", chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+
+def test_parse_feed_keeps_entries_with_an_empty_title() -> None:
+    payload = (
+        b'<?xml version="1.0"?><rss version="2.0"><channel>'
+        b"<item><title></title><link>https://www.example.com/p/untitled</link>"
+        b"<pubDate>Tue, 10 Nov 2026 09:00:00 GMT</pubDate></item>"
+        b"</channel></rss>"
+    )
+
+    (entry,) = parse_feed(payload)
+
+    assert entry.title == ""
+    assert entry.url == "https://www.example.com/p/untitled"

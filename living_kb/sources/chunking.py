@@ -24,14 +24,13 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
         if end >= len(words):
             break
 
-        overlap_length = 0
-        next_start = end
-        for index in range(end - 1, start - 1, -1):
-            word_length = len(words[index]) + (1 if index < end - 1 else 0)
-            if overlap_length + word_length > chunk_overlap:
-                break
-            overlap_length += word_length
+        next_start = end - 1
+        overlap_length = len(words[next_start]) + 1
+        index = end - 2
+        while index >= start and overlap_length < chunk_overlap:
+            overlap_length += len(words[index]) + 1
             next_start = index
+            index -= 1
         start = max(start + 1, next_start)
 
     return chunks
