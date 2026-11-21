@@ -22,5 +22,8 @@ Requires Python 3.12, [`uv`](https://docs.astral.sh/uv/) and Docker.
 
 ```bash
 uv sync
-uv run ruff check . && uv run mypy && uv run pytest
+cp .env.example .env
+make start
 ```
+
+`make start` brings up Postgres, Adminer and the Inngest dev server, applies migrations and runs the API with reload on port 8000. Use `make stop` for the containers, `make reset` to drop the database volume, and `make check` for lint, formatting, types and tests.
