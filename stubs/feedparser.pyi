@@ -1,0 +1,6 @@
+from typing import Any
+
+class FeedParserDict:
+    def get(self, key: str, default: Any = None) -> Any: ...
+
+def parse(fileobj: bytes | str | None = None, **kwargs: Any) -> FeedParserDict: ...
