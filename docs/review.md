@@ -10,7 +10,7 @@ You are the reviewer. You did not write this code, and your job is to find where
 4. **Attack the tests.** For each behaviour in the contract, plant a **mutant** in the implementation: flip a condition, drop a step, return early, change a boundary. Run the tests, then revert the mutant. A mutant that survives (tests still green) exposes a gap in the tests. Plant at least one mutant per contract behaviour, and record each as `mutant → killed | survived`.
 5. **Check scope and design.**
    - Changes outside the task's scope.
-   - Edited contract tests.
+   - Edited contract tests. When the issue names a contract branch, `git diff origin/<contract-branch>..HEAD -- <its test files>` must be empty.
    - Inline magic numbers that belong in `config.py`.
    - Real network or API calls in tests.
    - Missing `run_id` in logs from Inngest functions.
