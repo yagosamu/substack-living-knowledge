@@ -8,9 +8,11 @@ dependencies = [
     "alembic>=1.14",
     "asyncpg>=0.30",
     "fastapi>=0.115",
+    "feedparser>=6.0.14",
     "httpx>=0.28",
     "inngest>=0.5,<0.6",
     "pydantic-settings>=2.7",
+    "pyyaml>=6.0.4",
     "sqlalchemy[asyncio]>=2.0",
     "uvicorn[standard]>=0.34",
 ]
@@ -35,14 +37,18 @@ extend-immutable-calls = ["fastapi.Depends"]
 [tool.mypy]
 strict = true
 files = ["living_kb", "tests"]
+mypy_path = "stubs"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 10
 markers = ["integration: needs the real Postgres/pgvector from infra/docker-compose.yml"]
 
 [dependency-groups]
 dev = [
     "mypy>=2.4.1",
     "pytest>=9.2.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.17.6",
+    "types-pyyaml>=6.0.12.20261113",
 ]
