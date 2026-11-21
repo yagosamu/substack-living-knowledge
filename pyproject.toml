@@ -4,7 +4,10 @@ version = "0.1.0"
 description = "A durable, queryable knowledge base built from AI newsletters."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "feedparser>=6.0.14",
+    "pyyaml>=6.0.4",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -23,14 +26,18 @@ select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 [tool.mypy]
 strict = true
 files = ["living_kb", "tests"]
+mypy_path = "stubs"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 10
 markers = ["integration: needs the real Postgres/pgvector from infra/docker-compose.yml"]
 
 [dependency-groups]
 dev = [
     "mypy>=2.4.1",
     "pytest>=9.2.0",
+    "pytest-timeout>=2.4.0",
     "ruff>=0.17.6",
+    "types-pyyaml>=6.0.12.20261113",
 ]
