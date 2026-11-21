@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.6-pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-living_kb}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-living_kb_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-living_kb}
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-living_kb} -d ${POSTGRES_DB:-living_kb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  adminer:
+    image: adminer:latest
+    ports:
+      - "${ADMINER_PORT:-8081}:8080"
+    depends_on:
+      - postgres
+
+  inngest:
+    image: inngest/inngest:latest
+    command:
+      - inngest
+      - dev
+      - --no-discovery
+      - -u
+      - host.docker.internal:${API_PORT:-8000}/api/inngest
+    ports:
+      - "${INNGEST_PORT:-8288}:8288"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:

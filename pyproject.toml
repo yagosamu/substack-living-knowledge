@@ -4,7 +4,16 @@ version = "0.1.0"
 description = "A durable, queryable knowledge base built from AI newsletters."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "inngest>=0.5,<0.6",
+    "pydantic-settings>=2.7",
+    "sqlalchemy[asyncio]>=2.0",
+    "uvicorn[standard]>=0.34",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -20,6 +29,9 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
+
 [tool.mypy]
 strict = true
 files = ["living_kb", "tests"]
@@ -32,5 +44,6 @@ markers = ["integration: needs the real Postgres/pgvector from infra/docker-comp
 dev = [
     "mypy>=2.4.1",
     "pytest>=9.2.0",
+    "pytest-asyncio>=1.0",
     "ruff>=0.17.6",
 ]
