@@ -10,8 +10,9 @@ This system is built from scratch, one task at a time. Most implementation is de
 ## Decision
 
 - **Environment:** WSL2 (Ubuntu) on the Linux filesystem, with Docker Desktop's WSL integration for infrastructure containers. Python 3.12, managed by `uv`.
-- **Unit of work:** one task = one spec in `docs/tasks/` = one branch = one PR.
-  - The spec contains context, contract, tests, out-of-scope and an acceptance checklist.
+- **Unit of work:** one task = one GitHub issue labelled `ready-for-agent` = one branch = one PR that closes it.
+  - Feature specs are parent issues, and tasks are their sub-issues.
+  - A task issue contains context, contract, tests, out-of-scope and an acceptance checklist.
   - The human commits the contract tests before the task is delegated.
 - **Roles:**
   - Implementer agents make the contract tests pass.

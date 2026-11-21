@@ -2,15 +2,15 @@
 
 `living-kb` turns AI newsletters into a durable, queryable knowledge base. It runs RSS discovery, then ingestion (fetch, parse, chunk, embed), then hybrid retrieval. Later layers add attributed claims in a graph, an MCP server, and evals. The Python package is `living_kb`.
 
-Every change ships as one **task**. A task has a spec in `docs/tasks/NNN-<slug>.md`, its own branch, and one PR. The spec is the contract. When it is ambiguous, ask in the PR before you guess.
+Every change ships as one **task**. A task is a GitHub issue labelled `ready-for-agent`, and it gets its own branch and one PR. The issue is the contract. When it is ambiguous, ask in a comment on the issue before you guess.
 
 ## Implementing a task
 
-1. Read the whole spec and every ADR it links (`docs/adr/`).
-2. Work on branch `task/NNN-<slug>` and keep the diff inside the spec's scope. Any extra change goes in the PR description under **Follow-ups**.
-3. Make the spec's tests pass **without editing them**. They are the contract and the human wrote them. If a test looks wrong, say so in the PR and leave it as is. Add any extra tests you need beside them.
+1. Read the task with `gh issue view <n> --comments`. Also read its parent spec issue and every ADR it links (`docs/adr/`).
+2. Work on branch `task/<n>-<slug>` and keep the diff inside the task's scope. Any extra change goes in the PR description under **Follow-ups**.
+3. Make the task's contract tests pass **without editing them**. They are the contract and the human wrote them. If a test looks wrong, say so in the PR and leave it as is. Add any extra tests you need beside them.
 4. Run `uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest`. The task is done when all four are green locally.
-5. Open the PR against `main`. Title it `task NNN: <summary>`. In the body, list every acceptance-checklist item from the spec and how it is met.
+5. Open the PR against `main`. Title it `task #<n>: <summary>`, and start the body with `Closes #<n>`. Then list every acceptance-checklist item from the issue and how it is met.
 
 Merges into `main` happen through a reviewed PR with green CI. The human merges.
 

@@ -10,7 +10,7 @@ The system discovers articles from RSS feeds and ingests them through checkpoint
 
 ## Status
 
-Early construction. Progress is tracked as tasks in [`docs/tasks/`](docs/tasks/), and architectural decisions live in [`docs/adr/`](docs/adr/).
+Early construction. Progress is tracked in [GitHub Issues](https://github.com/yagosamu/substack-living-knowledge/issues), and architectural decisions live in [`docs/adr/`](docs/adr/).
 
 ## How it's built
 
