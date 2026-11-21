@@ -30,4 +30,4 @@ make start
 
 ### Tests
 
-Run the full suite with `make test` (or `uv run pytest`) while the Postgres service from `make start` is running. Integration tests use a dedicated database on the same Postgres server: the database in `DATABASE_URL` has `_test` appended (`living_kb` → `living_kb_test`). The suite creates that database when missing, applies all migrations to it before the first integration test, and truncates only it between tests. Development data is never deleted by a test run.
+Run the full suite with `make test` (or `uv run pytest`) while the Postgres service from `make start` is running. Integration tests use a dedicated database on the same Postgres server: the database in `DATABASE_URL` has `_test` appended (`living_kb` → `living_kb_test`). The suite creates that database when missing, applies all migrations to it before the first integration test, and truncates only it between tests. FastAPI requests in the suite use the same test database, so no test writes to development data.
