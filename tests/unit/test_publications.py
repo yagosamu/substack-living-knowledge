@@ -41,6 +41,15 @@ def test_load_publications_rejects_entry_missing_a_required_field(tmp_path: Path
         load_publications(path)
 
 
+def test_load_publications_reads_optional_notes(tmp_path: Path) -> None:
+    path = tmp_path / "publications.yaml"
+    path.write_text(REGISTRY + "    notes: Weekly deep dives.\n")
+
+    (pub,) = load_publications(path)
+
+    assert pub.notes == "Weekly deep dives."
+
+
 def test_load_publications_reads_optional_archive_urls(tmp_path: Path) -> None:
     path = tmp_path / "publications.yaml"
     path.write_text(REGISTRY + "    archive_urls:\n      - https://archive.example.org\n")

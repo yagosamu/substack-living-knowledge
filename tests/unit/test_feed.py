@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -66,7 +66,7 @@ def test_parse_feed_converts_dates_with_offsets_to_utc() -> None:
     (entry,) = parse_feed(rss(item("offset", "Tue, 10 Nov 2026 09:00:00 -0300")))
 
     assert entry.published_at == datetime(2026, 11, 10, 12, 0, 0, tzinfo=UTC)
-    assert entry.published_at.utcoffset() is not None
+    assert entry.published_at.utcoffset() == timedelta(0)
 
 
 def test_parse_feed_rejects_bytes_that_are_not_a_feed() -> None:
@@ -76,3 +76,22 @@ def test_parse_feed_rejects_bytes_that_are_not_a_feed() -> None:
 
 def test_parse_feed_returns_no_entries_for_a_valid_feed_without_items() -> None:
     assert parse_feed(rss()) == []
+
+
+def test_parse_feed_rejects_malformed_xml() -> None:
+    truncated = (FIXTURES / "decoding-ai.xml").read_bytes()[:1500]
+
+    with pytest.raises(ValueError):
+        parse_feed(truncated)
+
+
+def test_parse_feed_strips_whitespace_around_titles() -> None:
+    padded = (
+        "<title><![CDATA[\n   Durable Agents in Practice  \n]]></title>"
+        "<link>https://www.example.com/p/durable-agents</link>"
+        "<pubDate>Tue, 10 Nov 2026 09:00:00 GMT</pubDate>"
+    )
+
+    (entry,) = parse_feed(rss(padded))
+
+    assert entry.title == "Durable Agents in Practice"
