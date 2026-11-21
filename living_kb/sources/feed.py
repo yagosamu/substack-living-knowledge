@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import struct_time
 from typing import cast
+from xml.sax import SAXParseException
 
 from feedparser import parse as parse_bytes
 
@@ -17,7 +18,7 @@ def parse_feed(payload: bytes) -> list[FeedEntry]:
     document = parse_bytes(payload)
     if not cast(str, document.get("version", "")):
         raise ValueError("payload is not an RSS feed")
-    if document.get("bozo"):
+    if isinstance(document.get("bozo_exception"), SAXParseException):
         raise ValueError("payload is malformed XML")
 
     entries: list[FeedEntry] = []

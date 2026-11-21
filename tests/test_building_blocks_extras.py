@@ -50,6 +50,28 @@ def test_chunking_rejects_invalid_sizes(chunk_size: int, chunk_overlap: int) -> 
         chunk_text("some text", chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 
+def test_zero_overlap_shares_no_words_between_chunks() -> None:
+    text = "aaa bbb ccc ddd eee"
+
+    chunks = chunk_text(text, chunk_size=7, chunk_overlap=0)
+
+    assert chunks == ["aaa bbb", "ccc ddd", "eee"]
+    assert [word for chunk in chunks for word in chunk.split(" ")] == text.split()
+
+
+def test_parse_feed_accepts_a_recoverable_encoding_warning() -> None:
+    payload = (
+        b'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel>'
+        b"<item><title>Caf\xe9</title><link>https://www.example.com/p/cafe</link>"
+        b"<pubDate>Tue, 10 Nov 2026 09:00:00 GMT</pubDate></item>"
+        b"</channel></rss>"
+    )
+
+    (entry,) = parse_feed(payload)
+
+    assert (entry.title, entry.url) == ("Caf\u00e9", "https://www.example.com/p/cafe")
+
+
 def test_parse_feed_keeps_entries_with_an_empty_title() -> None:
     payload = (
         b'<?xml version="1.0"?><rss version="2.0"><channel>'
