@@ -16,14 +16,14 @@ services:
       retries: 20
 
   adminer:
-    image: adminer:latest
+    image: adminer:6.3.0
     ports:
       - "${ADMINER_PORT:-8081}:8080"
     depends_on:
       - postgres
 
   inngest:
-    image: inngest/inngest:latest
+    image: inngest/inngest:v1.53.0
     command:
       - inngest
       - dev

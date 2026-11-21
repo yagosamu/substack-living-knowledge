@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 
 import httpx
-import inngest
 import inngest.fast_api
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,29 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from living_kb.config import settings
 from living_kb.db import get_session
 from living_kb.health import HealthResponse, Probe, build_health
-
-inngest_client = inngest.Inngest(
-    app_id=settings.inngest_app_id,
-    api_base_url=settings.inngest_base_url,
-    event_api_base_url=settings.inngest_base_url,
-    event_key=settings.inngest_event_key or None,
-    signing_key=settings.inngest_signing_key or None,
-    is_production=not settings.inngest_dev,
-    logger=logging.getLogger("uvicorn.inngest"),
-)
+from living_kb.inngest_app import functions as inngest_functions
+from living_kb.inngest_app import inngest_client
 
 app = FastAPI(title="living-kb", version="0.1.0")
 
-
-@inngest_client.create_function(
-    fn_id="skeleton-ping",
-    trigger=inngest.TriggerEvent(event="kb/skeleton.ping"),
-)
-async def skeleton_ping(ctx: inngest.Context) -> dict[str, bool]:
-    return {"ok": True}
-
-
-inngest.fast_api.serve(app, inngest_client, [skeleton_ping])
+inngest.fast_api.serve(app, inngest_client, inngest_functions)
 
 
 async def get_probe() -> AsyncIterator[Probe]:
