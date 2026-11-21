@@ -64,3 +64,16 @@ def test_chunks_cover_every_word() -> None:
 def test_overlap_not_smaller_than_chunk_size_is_rejected(chunk_overlap: int) -> None:
     with pytest.raises(ValueError):
         chunk_text("some text", chunk_size=100, chunk_overlap=chunk_overlap)
+
+
+def test_overlap_repeats_whole_words_until_it_reaches_chunk_overlap() -> None:
+    # The last word of the first chunk ("z" + space = 2 chars) is short of an overlap
+    # of 4, so the overlap keeps going back to "yy" (2 + 3 = 5 chars). It may exceed
+    # chunk_overlap, but never falls short of it: no context is lost at a boundary.
+    text = "xxxx yy z wwwwwww vv"
+
+    assert chunk_text(text, chunk_size=12, chunk_overlap=4) == [
+        "xxxx yy z",
+        "yy z wwwwwww",
+        "wwwwwww vv",
+    ]
