@@ -5,8 +5,16 @@ description = "A durable, queryable knowledge base built from AI newsletters."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.14",
+    "asyncpg>=0.30",
+    "fastapi>=0.115",
     "feedparser>=6.0.14",
+    "httpx>=0.28",
+    "inngest>=0.5,<0.6",
+    "pydantic-settings>=2.7",
     "pyyaml>=6.0.4",
+    "sqlalchemy[asyncio]>=2.0",
+    "uvicorn[standard]>=0.34",
 ]
 
 [build-system]
@@ -22,6 +30,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.mypy]
 strict = true
