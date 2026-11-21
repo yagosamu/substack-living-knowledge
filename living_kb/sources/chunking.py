@@ -24,9 +24,9 @@ def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
         if end >= len(words):
             break
 
-        next_start = end - 1
-        overlap_length = len(words[next_start]) + 1
-        index = end - 2
+        next_start = end
+        overlap_length = 0
+        index = end - 1
         while index >= start and overlap_length < chunk_overlap:
             overlap_length += len(words[index]) + 1
             next_start = index
