@@ -1,4 +1,6 @@
 import asyncio
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import cast
@@ -200,3 +202,41 @@ def test_other_errors_inside_a_step_stay_retriable() -> None:
 
     with pytest.raises(ConnectionError):
         asyncio.run(inngest_runner(FakeInngestStep()).run("fetch", fetch))
+
+
+def test_mutating_a_step_result_does_not_change_what_a_replay_returns() -> None:
+    # The engine hands back a fresh copy of the journaled JSON on every replay, so code
+    # that mutates a step's result in place must not corrupt what the next attempt sees.
+    async def pipeline(runner: StepRunner) -> object:
+        chunks = await runner.run("chunk", lambda: ["first passage"])
+        chunks.append("added later")
+        return chunks
+
+    runner = JournalRunner()
+    asyncio.run(runner.execute(pipeline))
+
+    assert asyncio.run(runner.execute(pipeline)) == ["first passage", "added later"]
+
+
+def test_inngest_runner_rejects_reusing_a_step_name_within_one_invocation() -> None:
+    # The SDK would silently re-key a reused id ("embed", "embed:1"), tying journal keys
+    # to call order. The adapter forbids reuse so production behaves like the fake.
+    step = FakeInngestStep()
+    runner = inngest_runner(step)
+    asyncio.run(runner.run("embed", lambda: [0.1]))
+
+    with pytest.raises(ValueError, match="embed"):
+        asyncio.run(runner.run("embed", lambda: [0.2]))
+    assert step.step_ids == ["embed"]
+
+
+def test_importing_the_seam_does_not_import_the_inngest_sdk() -> None:
+    # Pipelines import StepRunner and PermanentError; only the adapter may need Inngest.
+    # A fresh interpreter, because this test process has already imported inngest.
+    probe = "import sys, living_kb.durable; print('inngest' in sys.modules)"
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.strip() == "False"
