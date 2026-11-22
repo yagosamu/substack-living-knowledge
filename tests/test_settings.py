@@ -32,5 +32,5 @@ def test_spec_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert config.inngest_event_key is None
     assert config.inngest_signing_key is None
     assert config.api_port == 8000
-    assert config.publications_registry_path == "config/publications.yaml"
+    assert config.publications_registry_path == "publications.yaml"
     assert config.health_check_timeout_seconds == 2.0

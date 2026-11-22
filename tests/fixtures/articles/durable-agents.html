@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Synthetic test fixture shaped like a Substack post page. All text is original. -->
+  <title>Durable Agents in Practice - Example Newsletter</title>
+  <meta property="og:title" content="Durable Agents in Practice">
+  <meta name="author" content="Ada Example">
+  <meta property="article:published_time" content="2026-11-10T09:30:00+00:00">
+  <link rel="canonical" href="https://www.example.com/p/durable-agents">
+</head>
+<body>
+  <header class="main-menu">
+    <a href="https://www.example.com">Example Newsletter</a>
+    <button class="subscribe-btn">Subscribe</button>
+  </header>
+  <div class="post-wrapper">
+    <article class="post">
+      <h1 class="post-title">Durable Agents in Practice</h1>
+      <h3 class="subtitle">Why long-running agents need checkpoints, not hope</h3>
+      <div class="post-meta">
+        <a class="author" href="https://www.example.com/@ada">Ada Example</a>
+        <time datetime="2026-11-10T09:30:00+00:00">Nov 10, 2026</time>
+      </div>
+      <div class="available-content">
+        <div class="body markup">
+          <p>Every agent that runs for more than a few seconds will eventually be interrupted. A deploy replaces the process, a container runs out of memory, or a laptop lid closes in the middle of a long research task. When that happens, an agent without checkpoints starts again from the beginning and pays again for every model call it had already made. For a short demo this is an annoyance; for a pipeline that embeds thousands of documents it is a budget problem that grows with every retry.</p>
+          <p>The fix is to treat each side effect as a named step whose result is recorded before the next step begins. On a retry the runtime replays the function from the top, but every step that already finished returns its recorded result instead of running again. Only the step that failed executes a second time. This turns a crash halfway through an expensive workflow into a cheap resumption, and it makes the progress of every run visible step by step instead of hidden inside a single opaque function call.</p>
+          <p>Checkpoints are not free. A step can finish its work and then die before the runtime records that it finished, so the step must be safe to run twice. Writes become upserts keyed by a natural identity, and inserts become replacements of a known set of rows. Code between steps must make the same decisions on every replay, which means the clock, random numbers and network reads belong inside steps. Teams that accept these rules get agents that survive restarts; teams that skip them get duplicate rows and surprising bills.</p>
+          <p>The practical lesson is to design the step boundaries first. Put the slow, the paid and the fragile operations each in their own step, keep step outputs small enough to journal, and test the resume path deliberately by failing a step on purpose. An agent that has been killed and resumed in a test is an agent you can trust in production.</p>
+        </div>
+      </div>
+      <div class="subscription-widget-wrap">
+        <p>Thanks for reading Example Newsletter! Subscribe for free to receive new posts and support my work.</p>
+        <form><input type="email" placeholder="Type your email..."><button>Subscribe</button></form>
+      </div>
+      <div class="post-footer">
+        <button class="like-button">Like</button>
+        <button class="share-button">Share</button>
+        <a class="comments" href="https://www.example.com/p/durable-agents/comments">12 Comments</a>
+      </div>
+    </article>
+  </div>
+  <footer class="footer">
+    <p>&copy; 2026 Example Newsletter. Privacy · Terms · Collection notice</p>
+    <p>Substack is the home for great culture</p>
+  </footer>
+</body>
+</html>
