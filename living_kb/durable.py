@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from typing import Protocol, overload
+from typing import TYPE_CHECKING, Protocol, cast, overload
 
-import inngest
+if TYPE_CHECKING:
+    import inngest
 
 
 class StepRunner(Protocol):
@@ -42,7 +43,7 @@ class JournalRunner:
     """In-memory runner that journals JSON step outputs for replay in tests."""
 
     def __init__(self) -> None:
-        self._journal: dict[str, object] = {}
+        self._journal: dict[str, str] = {}
         self._pending_failures: dict[str, bool] = {}
         self._seen: set[str] = set()
 
@@ -63,10 +64,10 @@ class JournalRunner:
             raise InjectedFailure(f"injected failure in step {name!r}")
 
         if name in self._journal:
-            return self._journal[name]
+            return cast(object, json.loads(self._journal[name]))
 
-        self._journal[name] = json.loads(json.dumps(await _call_step(fn)))
-        return self._journal[name]
+        self._journal[name] = json.dumps(await _call_step(fn))
+        return cast(object, json.loads(self._journal[name]))
 
     async def execute[T](self, pipeline: Callable[[StepRunner], Awaitable[T]]) -> T:
         """Run a pipeline, allowing a fresh attempt to replay the same journal."""
@@ -88,16 +89,23 @@ class InngestRunner:
 
     def __init__(self, ctx: inngest.Context) -> None:
         self._ctx = ctx
+        self._seen: set[str] = set()
 
     @overload
     async def run[T](self, name: str, fn: Callable[[], Awaitable[T]]) -> T: ...
     @overload
     async def run[T](self, name: str, fn: Callable[[], T]) -> T: ...
     async def run(self, name: str, fn: Callable[[], object]) -> object:
+        if name in self._seen:
+            raise ValueError(f"duplicate step name: {name}")
+        self._seen.add(name)
+
+        import inngest as inngest_sdk
+
         async def handler() -> object:
             try:
                 return await _call_step(fn)
             except PermanentError as exc:
-                raise inngest.NonRetriableError(str(exc)) from exc
+                raise inngest_sdk.NonRetriableError(str(exc)) from exc
 
         return await self._ctx.step.run(name, handler)
