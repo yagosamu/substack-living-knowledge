@@ -11,3 +11,6 @@ dist/
 build/
 *.egg-info/
 .DS_Store
+
+# Personal study notes (Portuguese), kept beside the code but never committed
+progress/
