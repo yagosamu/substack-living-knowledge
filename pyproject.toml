@@ -11,9 +11,11 @@ dependencies = [
     "feedparser>=6.0.14",
     "httpx>=0.28",
     "inngest>=0.5,<0.6",
+    "openai>=3.57.0",
     "pydantic-settings>=2.7",
     "pyyaml>=6.0.4",
     "sqlalchemy[asyncio]>=2.0",
+    "trafilatura>=2.3.1",
     "uvicorn[standard]>=0.34",
 ]
 
