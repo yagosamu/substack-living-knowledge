@@ -126,7 +126,8 @@ def test_step_output_comes_back_as_its_json_round_trip_on_first_run_and_on_repla
 
 
 def test_reusing_a_step_name_within_one_execution_is_rejected() -> None:
-    # Step names are the journal's keys: a second "embed" would silently replay the first.
+    # Step names are the journal's keys: in this fake a second "embed" would silently replay
+    # the first, and the real SDK would re-key it by call order (ADR 0003, rule 3).
     async def pipeline(runner: StepRunner) -> object:
         await runner.run("embed", Counter([0.1]))
         return await runner.run("embed", Counter([0.2]))
