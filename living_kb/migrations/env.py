@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from logging.config import fileConfig
+from typing import cast
 
 from alembic import context
 from sqlalchemy import pool
@@ -14,7 +15,8 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", settings.database_url)
+database_url = cast(str, config.attributes.get("database_url", settings.database_url))
+config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = None
 
@@ -27,7 +29,7 @@ def do_run_migrations(connection: Connection) -> None:
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.database_url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
