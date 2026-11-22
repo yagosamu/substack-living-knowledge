@@ -7,6 +7,7 @@ import logging
 import inngest
 
 from living_kb.config import settings
+from living_kb.durable import InngestRunner, StepRunner
 
 inngest_client = inngest.Inngest(
     app_id=settings.inngest_app_id,
@@ -19,14 +20,21 @@ inngest_client = inngest.Inngest(
 )
 
 
+async def demo_pipeline(runner: StepRunner, *, name: str) -> dict[str, str]:
+    """Prove the seam with two named steps and no Inngest dependency."""
+    greeting = await runner.run("greet", lambda: f"hello, {name}")
+    shouted = await runner.run("shout", lambda: greeting.upper())
+    return {"greeting": shouted}
+
+
 @inngest_client.create_function(
-    fn_id="skeleton-ping",
-    trigger=inngest.TriggerEvent(event="kb/skeleton.ping"),
+    fn_id="demo-durable",
+    trigger=inngest.TriggerEvent(event="kb/demo.requested"),
+    retries=settings.step_retries,
 )
-async def skeleton_ping(ctx: inngest.Context) -> dict[str, bool]:
-    return {"ok": True}
+async def demo_durable(ctx: inngest.Context) -> dict[str, str]:
+    """Run the demo pipeline with the real engine's step runner."""
+    return await demo_pipeline(InngestRunner(ctx), name=str(ctx.event.data["name"]))
 
 
-functions = [
-    skeleton_ping,  # remove when the first real function lands
-]
+functions = [demo_durable]
