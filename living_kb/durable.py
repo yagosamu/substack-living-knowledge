@@ -6,6 +6,8 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol, cast, overload
 
+from living_kb.config import settings
+
 if TYPE_CHECKING:
     import inngest
 
@@ -27,6 +29,14 @@ class PermanentError(Exception):
     """A failure that retrying the step cannot fix."""
 
 
+def _journal_payload(name: str, value: object, budget: int) -> str:
+    """Serialize one step output and enforce ADR 0003's journal budget."""
+    payload = json.dumps(value)
+    if len(payload.encode("utf-8")) > budget:
+        raise PermanentError(f"step {name!r} output exceeds the {budget}-byte journal budget")
+    return payload
+
+
 @overload
 async def _call_step[T](fn: Callable[[], Awaitable[T]]) -> T: ...
 @overload
@@ -42,7 +52,10 @@ async def _call_step(fn: Callable[[], object]) -> object:
 class JournalRunner:
     """In-memory runner that journals JSON step outputs for replay in tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_output_bytes: int | None = None) -> None:
+        self._max_output_bytes = (
+            settings.max_step_output_bytes if max_output_bytes is None else max_output_bytes
+        )
         self._journal: dict[str, str] = {}
         self._pending_failures: dict[str, bool] = {}
         self._seen: set[str] = set()
@@ -66,8 +79,9 @@ class JournalRunner:
         if name in self._journal:
             return cast(object, json.loads(self._journal[name]))
 
-        self._journal[name] = json.dumps(await _call_step(fn))
-        return cast(object, json.loads(self._journal[name]))
+        payload = _journal_payload(name, await _call_step(fn), self._max_output_bytes)
+        self._journal[name] = payload
+        return cast(object, json.loads(payload))
 
     async def execute[T](self, pipeline: Callable[[StepRunner], Awaitable[T]]) -> T:
         """Run a pipeline, allowing a fresh attempt to replay the same journal."""
@@ -87,8 +101,11 @@ class JournalRunner:
 class InngestRunner:
     """Map the step-runner seam onto Inngest's step API."""
 
-    def __init__(self, ctx: inngest.Context) -> None:
+    def __init__(self, ctx: inngest.Context, *, max_output_bytes: int | None = None) -> None:
         self._ctx = ctx
+        self._max_output_bytes = (
+            settings.max_step_output_bytes if max_output_bytes is None else max_output_bytes
+        )
         self._seen: set[str] = set()
 
     @overload
@@ -104,8 +121,23 @@ class InngestRunner:
 
         async def handler() -> object:
             try:
-                return await _call_step(fn)
+                result = await _call_step(fn)
+                _journal_payload(name, result, self._max_output_bytes)
+                return result
             except PermanentError as exc:
                 raise inngest_sdk.NonRetriableError(str(exc)) from exc
 
         return await self._ctx.step.run(name, handler)
+
+
+async def run_durable[T](
+    ctx: inngest.Context,
+    pipeline: Callable[[StepRunner], Awaitable[T]],
+) -> T:
+    """Run a durable function and make a PermanentError anywhere non-retriable."""
+    try:
+        return await pipeline(InngestRunner(ctx))
+    except PermanentError as exc:
+        import inngest as inngest_sdk
+
+        raise inngest_sdk.NonRetriableError(str(exc)) from exc
