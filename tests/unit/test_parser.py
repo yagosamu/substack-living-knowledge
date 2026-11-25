@@ -60,3 +60,18 @@ def test_a_page_with_no_extractable_content_fails_permanently() -> None:
 
     with pytest.raises(PermanentError, match=URL):
         parse_article(empty, URL, fallback_published_at=FEED_DATE)
+
+
+def test_content_hash_depends_on_the_article_text_not_on_the_page_around_it() -> None:
+    # Same body, different page chrome (header, ads, footer): the article did not change.
+    rechromed = FIXTURE.read_text().replace(
+        '<footer class="footer">',
+        '<aside class="promo"><p>Upgrade to paid for the full archive.</p></aside>'
+        '<footer class="footer"><p>New footer text, new year.</p>',
+    )
+
+    original = parse_article(FIXTURE.read_text(), URL, fallback_published_at=FEED_DATE)
+    restyled = parse_article(rechromed, URL, fallback_published_at=FEED_DATE)
+
+    assert original.text == restyled.text
+    assert original.content_hash == restyled.content_hash

@@ -6,6 +6,7 @@ Inngest engine and without paid APIs.
 """
 
 import asyncio
+import dataclasses
 from collections.abc import Callable, Coroutine, Mapping
 from pathlib import Path
 from typing import Any
@@ -78,7 +79,8 @@ class Harness:
             "canonical_id": "pub:example:durable-agents",
             "publication_id": self.publication_id,
             "url": ARTICLE_URL,
-            "title": "Durable Agents in Practice",
+            # Deliberately different from the page title: the page is the source of truth.
+            "title": "durable agents (as titled in the feed)",
             "published_at": "2026-11-09T08:00:00+00:00",
             "via": "rss",
         }
@@ -178,15 +180,14 @@ class RecordingRunner:
 
 
 @pytest.mark.integration
-def test_ingestion_runs_seven_named_steps_in_order(harness: Harness) -> None:
+def test_ingestion_runs_six_named_steps_in_order(harness: Harness) -> None:
     runner = RecordingRunner(JournalRunner())
 
     asyncio.run(ingest_article(runner, harness.event(), harness.ports))
 
     assert runner.names == [
         "check-allowlist",
-        "fetch-html",
-        "parse",
+        "fetch-article",
         "chunk",
         "embed",
         "persist",
@@ -322,3 +323,53 @@ def test_the_final_url_after_a_redirect_is_the_one_stored(
     asyncio.run(JournalRunner().execute(harness.pipeline(harness.event())))
 
     assert asyncio.run(_rows(session_factory, "SELECT url FROM articles")) == [(final_url,)]
+
+
+@pytest.mark.integration
+def test_a_heavy_page_never_puts_its_raw_html_in_the_journal(
+    harness: Harness, session_factory: SessionFactory
+) -> None:
+    # ADR 0003, rule 4: step outputs stay small. A page with 300 KB of scripts around a
+    # normal body must ingest under a 100 KB per-step budget, because only the extracted
+    # article is journaled, never the HTML.
+    heavy = ARTICLE_HTML.replace(
+        "</head>", "<script>" + "var tracking = 1;" * 20_000 + "</script></head>"
+    )
+    assert len(heavy) > 300_000
+    harness.fetcher.pages[ARTICLE_URL] = FetchedPage(url=ARTICLE_URL, html=heavy)
+
+    asyncio.run(JournalRunner(max_output_bytes=100_000).execute(harness.pipeline(harness.event())))
+
+    assert asyncio.run(_counts(session_factory))[0] == 1
+
+
+class CountingSessionFactory:
+    """Wraps the session factory to count how many times the pipeline opens the database."""
+
+    def __init__(self, inner: SessionFactory) -> None:
+        self.inner = inner
+        self.opened = 0
+
+    def __call__(self) -> AsyncSession:
+        self.opened += 1
+        return self.inner()
+
+
+@pytest.mark.integration
+def test_a_failure_at_emit_retries_only_emit_without_persisting_again(
+    harness: Harness, session_factory: SessionFactory
+) -> None:
+    counting = CountingSessionFactory(session_factory)
+    ports = dataclasses.replace(harness.ports, session_factory=counting)  # type: ignore[arg-type]
+    runner = JournalRunner()
+    runner.fail_next("emit")
+
+    def pipeline(r: StepRunner) -> Coroutine[Any, Any, Any]:
+        return ingest_article(r, harness.event(), ports)
+
+    with pytest.raises(InjectedFailure):
+        asyncio.run(runner.execute(pipeline))
+    asyncio.run(runner.execute(pipeline))
+
+    assert counting.opened == 1
+    assert len(harness.sender.sent) == 1
