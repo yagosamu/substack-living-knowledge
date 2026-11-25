@@ -1,4 +1,6 @@
 .env
+.dev-stack.env
+.dev-stack.local.json
 .venv/
 __pycache__/
 *.py[cod]

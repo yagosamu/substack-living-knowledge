@@ -10,7 +10,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Every tunable value, read from the environment or a local .env file."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", ".dev-stack.env"), env_file_encoding="utf-8", extra="ignore"
+    )
 
     chunk_size: int = 1000
     chunk_overlap: int = 150
