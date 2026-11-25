@@ -1,6 +1,6 @@
 STACK = bash infra/dev-stack.sh
 
-.PHONY: start stop reset stack-ports stack-env lint test check
+.PHONY: start stop reset stack-ports stack-env stack-plan lint test check
 
 start:
 	$(STACK) start
@@ -16,6 +16,9 @@ stack-ports:
 
 stack-env:
 	$(STACK) env
+
+stack-plan:
+	$(STACK) plan
 
 lint:
 	uv run ruff check .

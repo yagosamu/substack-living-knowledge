@@ -4,7 +4,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 env_file="$root/.dev-stack.env"
-uv run python -m living_kb.dev_stack --write-env "$env_file"
+python_cmd=(${LIVING_KB_DEV_STACK_PYTHON:-uv run python})
+"${python_cmd[@]}" -m living_kb.dev_stack --write-env "$env_file"
 set -a
 . "$env_file"
 set +a
@@ -30,11 +31,16 @@ case "${1:-}" in
   env)
     cat "$env_file"
     ;;
+  plan)
+    printf 'project=%s\n' "$COMPOSE_PROJECT_NAME"
+    printf 'compose=%s\n' "${compose[*]}"
+    "${compose[@]}" config
+    ;;
   test)
     exec uv run pytest
     ;;
   *)
-    printf 'usage: infra/dev-stack.sh start|stop|reset|ports|env|test\n' >&2
+    printf 'usage: infra/dev-stack.sh start|stop|reset|ports|env|plan|test\n' >&2
     exit 2
     ;;
 esac

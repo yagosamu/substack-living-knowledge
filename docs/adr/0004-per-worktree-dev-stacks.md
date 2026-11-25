@@ -20,4 +20,7 @@ Several worktrees of this repository run at the same time. They used one Compose
 - A worktree's ports stay stable across restarts, including while its stack is running.
 - Local generated files are machine-specific and gitignored; moving a worktree changes its derived identity and may allocate a new block.
 - If another process takes a persisted port, the operator either frees it or sets an explicit override.
+- `.env.example` must leave the per-worktree ports and URLs commented out. Since the README tells people to copy it to `.env`, pinning 5433/8081/8288/8000 there would turn an explicit override into the default and silently restore the original collision.
+- `Settings` reads `.env` first and the generated `.dev-stack.env` second, so generated values win over `.env` while real shell variables still win over both. This order is load-bearing: flipping it makes the app and tests use stale ports while Compose uses derived ones.
+- Allocation is check-then-act with no lock. Two worktrees whose hashes land on the same free block and start at the same instant can both choose it before either writes its allocation file or Docker binds the ports. The probability is about 1/512 per pair; the escape hatch is an explicit port override, and a lock would be the next step if this is ever observed.
 - The dev-only allocation numbers live with the dev tooling, not in the application's `Settings`, because they describe the local environment rather than application behaviour.
