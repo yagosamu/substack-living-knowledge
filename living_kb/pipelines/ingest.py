@@ -1,4 +1,4 @@
-"""The seven-step durable pipeline that ingests one discovered article."""
+"""The six-step durable pipeline that ingests one discovered article."""
 
 from __future__ import annotations
 
@@ -52,12 +52,8 @@ class IngestPorts:
     publications: Sequence[Publication]
 
 
-class FetchedPayload(TypedDict):
+class ArticlePayload(TypedDict):
     url: str
-    html: str
-
-
-class ParsedPayload(TypedDict):
     title: str | None
     author: str | None
     published_at: str
@@ -79,14 +75,11 @@ def _check_allowlist(event: ArticleDiscovered, publications: Sequence[Publicatio
     return publication.slug
 
 
-async def _fetch(url: str, fetch_html: FetchHtml) -> FetchedPayload:
+async def _fetch_article(url: str, fetch_html: FetchHtml, fallback: datetime) -> ArticlePayload:
     page = await fetch_html(url)
-    return {"url": page.url, "html": page.html}
-
-
-def _parse(page: FetchedPage, fallback: datetime) -> ParsedPayload:
     parsed = parse_article(page.html, page.url, fallback_published_at=fallback)
     return {
+        "url": page.url,
         "title": parsed.title,
         "author": parsed.author,
         "published_at": parsed.published_at.isoformat(),
@@ -98,8 +91,7 @@ def _parse(page: FetchedPage, fallback: datetime) -> ParsedPayload:
 async def _persist(
     session_factory: async_sessionmaker[AsyncSession],
     event: ArticleDiscovered,
-    final_url: str,
-    parsed: ParsedPayload,
+    parsed: ArticlePayload,
     chunks: list[str],
     vectors: list[list[float]],
 ) -> PersistPayload:
@@ -135,7 +127,7 @@ async def _persist(
             {
                 "canonical_id": str(event.canonical_id),
                 "publication_id": event.publication_id,
-                "url": final_url,
+                "url": parsed["url"],
                 "title": parsed["title"],
                 "author": parsed["author"],
                 "published_at": published_at,
@@ -157,9 +149,6 @@ async def _persist(
                     """
                     INSERT INTO passages (article_id, chunk_index, text, embedding)
                     VALUES (:article_id, :chunk_index, :body, CAST(:embedding AS vector))
-                    ON CONFLICT (article_id, chunk_index) DO UPDATE SET
-                        text = EXCLUDED.text,
-                        embedding = EXCLUDED.embedding
                     """
                 ),
                 {
@@ -201,9 +190,10 @@ async def ingest_article(
         raise PermanentError(f"malformed {ARTICLE_DISCOVERED} event: {exc}") from exc
 
     await runner.run("check-allowlist", lambda: _check_allowlist(discovered, ports.publications))
-    fetched = await runner.run("fetch-html", lambda: _fetch(str(discovered.url), ports.fetch_html))
-    page = FetchedPage(url=fetched["url"], html=fetched["html"])
-    parsed = await runner.run("parse", lambda: _parse(page, discovered.published_at))
+    parsed = await runner.run(
+        "fetch-article",
+        lambda: _fetch_article(str(discovered.url), ports.fetch_html, discovered.published_at),
+    )
     chunks = await runner.run(
         "chunk",
         lambda: chunk_text(parsed["text"], settings.chunk_size, settings.chunk_overlap),
@@ -211,7 +201,7 @@ async def ingest_article(
     vectors = await runner.run("embed", lambda: ports.embed(chunks))
     persisted = await runner.run(
         "persist",
-        lambda: _persist(ports.session_factory, discovered, page.url, parsed, chunks, vectors),
+        lambda: _persist(ports.session_factory, discovered, parsed, chunks, vectors),
     )
     await runner.run("emit", lambda: _emit(discovered, persisted, ports.send_event))
     return {"article_id": persisted["article_id"], "passage_count": persisted["passage_count"]}

@@ -11,7 +11,7 @@ import inngest
 
 from living_kb.config import settings
 from living_kb.db import SessionFactory
-from living_kb.durable import InngestRunner, StepRunner
+from living_kb.durable import InngestRunner, StepRunner, run_durable
 from living_kb.events import ARTICLE_DISCOVERED
 from living_kb.pipelines.ingest import FetchedPage, IngestPorts, ingest_article
 from living_kb.sources.embedder import EmbeddingClient, OpenAIEmbedder
@@ -96,6 +96,41 @@ async def demo_durable(ctx: inngest.Context) -> dict[str, str]:
     return await demo_pipeline(InngestRunner(ctx), name=str(ctx.event.data["name"]))
 
 
+async def handle_ingest_article(ctx: inngest.Context) -> dict[str, int]:
+    """Wire the production ports and run the six durable steps for one article."""
+    run_id = str(getattr(ctx, "run_id", "unknown"))
+    _log("ingest-article started", run_id, canonical_id=ctx.event.data.get("canonical_id"))
+
+    async def pipeline(runner: StepRunner) -> dict[str, int]:
+        async with httpx.AsyncClient(
+            headers={"User-Agent": settings.user_agent},
+            timeout=settings.request_timeout_seconds,
+            follow_redirects=True,
+        ) as client:
+            ports = IngestPorts(
+                fetch_html=HttpxFetcher(client),
+                embed=LazyEmbedder(),
+                send_event=InngestEventSender(),
+                session_factory=SessionFactory,
+                publications=publications,
+            )
+            return await ingest_article(runner, dict(ctx.event.data), ports)
+
+    try:
+        result = await run_durable(ctx, pipeline)
+    except Exception as exc:
+        _log("ingest-article failed", run_id, error=str(exc))
+        raise
+
+    _log(
+        "ingest-article completed",
+        run_id,
+        article_id=result["article_id"],
+        passage_count=result["passage_count"],
+    )
+    return result
+
+
 @inngest_client.create_function(
     fn_id="ingest-article",
     trigger=inngest.TriggerEvent(event=ARTICLE_DISCOVERED),
@@ -108,35 +143,8 @@ async def demo_durable(ctx: inngest.Context) -> dict[str, str]:
     ],
 )
 async def ingest_article_function(ctx: inngest.Context) -> dict[str, int]:
-    """Wire the production ports and run the seven durable steps for one article."""
-    run_id = str(ctx.run_id)
-    _log("ingest-article started", run_id, canonical_id=ctx.event.data.get("canonical_id"))
-
-    async with httpx.AsyncClient(
-        headers={"User-Agent": settings.user_agent},
-        timeout=settings.request_timeout_seconds,
-        follow_redirects=True,
-    ) as client:
-        ports = IngestPorts(
-            fetch_html=HttpxFetcher(client),
-            embed=LazyEmbedder(),
-            send_event=InngestEventSender(),
-            session_factory=SessionFactory,
-            publications=publications,
-        )
-        try:
-            result = await ingest_article(InngestRunner(ctx), dict(ctx.event.data), ports)
-        except Exception as exc:
-            _log("ingest-article failed", run_id, error=str(exc))
-            raise
-
-    _log(
-        "ingest-article completed",
-        run_id,
-        article_id=result["article_id"],
-        passage_count=result["passage_count"],
-    )
-    return result
+    """Let the production entry point translate permanent failures anywhere in the run."""
+    return await handle_ingest_article(ctx)
 
 
 functions: list[inngest.Function[Any]] = [demo_durable, ingest_article_function]

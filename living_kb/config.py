@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     ingest_concurrency: int = 3
     step_retries: int = 3
+    max_step_output_bytes: int = 3_000_000
 
     postgres_user: str = "living_kb"
     postgres_password: str = "living_kb_pw"
