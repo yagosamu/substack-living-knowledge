@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any, cast
 
 import httpx
@@ -11,8 +11,23 @@ from living_kb.config import settings
 from living_kb.durable import PermanentError
 from living_kb.inngest_app import article_fetcher, handle_ingest_article
 from living_kb.sources.fetcher import RobotsCache
+from living_kb.sources.publications import Publication
 
-USER_AGENT = settings.user_agent
+TEST_HOSTS = (
+    "news.example.com",
+    "other.example.net",
+    "across-runs.example.com",
+    "mirror.example.net",
+)
+TEST_PUBLICATIONS = [
+    Publication(
+        slug=host.split(".", 1)[0],
+        name=f"{host} Newsletter",
+        feed_url=f"https://{host}/feed",
+        homepage=f"https://{host}",
+    )
+    for host in TEST_HOSTS
+]
 
 
 def _robots(status: int = 404, text: str = "") -> httpx.Response:
@@ -25,6 +40,7 @@ def _fetch(
     *,
     cache: RobotsCache | None = None,
     use_production_cache: bool = False,
+    publications: Sequence[Publication] = TEST_PUBLICATIONS,
 ) -> tuple[str, str]:
     async def run() -> tuple[str, str]:
         async with article_fetcher(
@@ -32,6 +48,7 @@ def _fetch(
             robots_cache=(
                 None if use_production_cache else (cache if cache is not None else RobotsCache())
             ),
+            allowed_publications=publications,
         ) as fetcher:
             page = await fetcher(url)
         return page.url, page.html
@@ -39,7 +56,13 @@ def _fetch(
     return asyncio.run(run())
 
 
-def test_every_request_carries_the_configured_user_agent_and_timeout() -> None:
+def test_every_request_uses_the_configured_user_agent_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = "probe-bot/9 (+https://probe.example)"
+    timeout = 3
+    monkeypatch.setattr(settings, "user_agent", agent)
+    monkeypatch.setattr(settings, "request_timeout_seconds", timeout)
     seen: list[tuple[str, dict[str, Any], dict[str, int]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -54,13 +77,13 @@ def test_every_request_carries_the_configured_user_agent_and_timeout() -> None:
         "https://news.example.com/robots.txt",
         "https://news.example.com/p/post",
     ]
-    for _, headers, timeout in seen:
-        assert headers["user-agent"] == USER_AGENT
-        assert timeout == {
-            "connect": settings.request_timeout_seconds,
-            "read": settings.request_timeout_seconds,
-            "write": settings.request_timeout_seconds,
-            "pool": settings.request_timeout_seconds,
+    for _, headers, limits in seen:
+        assert headers["user-agent"] == agent
+        assert limits == {
+            "connect": timeout,
+            "read": timeout,
+            "write": timeout,
+            "pool": timeout,
         }
 
 
@@ -100,15 +123,43 @@ def test_a_robots_disallow_fails_permanently_without_requesting_the_article() ->
     assert seen == ["https://news.example.com/robots.txt"]
 
 
-def test_robots_rules_apply_only_to_matching_user_agents() -> None:
+def test_the_own_user_agent_group_wins_over_the_wildcard() -> None:
+    seen: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
         if request.url.path == "/robots.txt":
-            return _robots(200, "User-agent: OtherBot\nDisallow: /only-for-other-bot\n")
+            return _robots(
+                200,
+                "User-agent: *\nDisallow: /\n\n"
+                "User-agent: OtherBot\nDisallow: /only-for-other-bot\n\n"
+                "User-agent: living-kb\nDisallow: /private\n",
+            )
         return httpx.Response(200, text="<article>a full post</article>")
 
-    assert _fetch("https://news.example.com/only-for-other-bot/post", handler)[0] == (
-        "https://news.example.com/only-for-other-bot/post"
+    assert _fetch("https://news.example.com/public/post", handler)[1] == (
+        "<article>a full post</article>"
     )
+    with pytest.raises(PermanentError, match="disallows"):
+        _fetch("https://news.example.com/private/post", handler)
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/public/post",
+        "https://news.example.com/robots.txt",
+    ]
+
+
+def test_allow_rules_override_a_broader_disallow() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return _robots(200, "User-agent: *\nDisallow: /p/\nAllow: /p/public\n")
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    assert _fetch("https://news.example.com/p/public/post", handler)[1] == (
+        "<article>a full post</article>"
+    )
+    with pytest.raises(PermanentError, match="disallows"):
+        _fetch("https://news.example.com/p/private/post", handler)
 
 
 def test_a_disallow_prefix_does_not_block_an_unrelated_path() -> None:
@@ -126,12 +177,57 @@ def test_a_disallow_prefix_does_not_block_an_unrelated_path() -> None:
         _fetch("https://news.example.com/p/private/deep", handler, cache=cache)
 
 
-class _ExplodingStream(httpx.AsyncByteStream):
-    def __init__(self, chunk: bytes) -> None:
-        self.chunk = chunk
+@pytest.mark.parametrize("status", [401, 403, 404, 410], ids=["401", "403", "404", "410"])
+def test_every_robots_4xx_except_408_and_429_means_no_rules(status: int) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return _robots(status)
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    assert _fetch("https://news.example.com/p/post", handler) == (
+        "https://news.example.com/p/post",
+        "<article>a full post</article>",
+    )
+
+
+@pytest.mark.parametrize("status", [408, 429], ids=["408", "429"])
+def test_robots_retriable_client_errors_stay_retriable(status: int) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return _robots(status)
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        _fetch("https://news.example.com/p/post", handler)
+    assert raised.value.response.status_code == status
+    assert not isinstance(raised.value, PermanentError)
+    assert seen == ["https://news.example.com/robots.txt"]
+
+
+def test_robots_500_is_retriable_and_never_allows_the_article() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return _robots(500)
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        _fetch("https://news.example.com/p/post", handler)
+    assert raised.value.response.status_code == 500
+    assert not isinstance(raised.value, PermanentError)
+    assert seen == ["https://news.example.com/robots.txt"]
+
+
+class _ChunkedStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: Sequence[bytes]) -> None:
+        self.chunks = tuple(chunks)
+        self.consumed = 0
 
     async def __aiter__(self) -> AsyncIterator[bytes]:
-        yield self.chunk
+        for chunk in self.chunks:
+            self.consumed += 1
+            yield chunk
         raise AssertionError("the stream was read past the size cap")
 
     async def aread(self) -> bytes:
@@ -148,12 +244,29 @@ def test_an_oversized_body_fails_permanently_while_streaming(
         seen.append(str(request.url))
         if request.url.path == "/robots.txt":
             return _robots()
-        return httpx.Response(200, stream=_ExplodingStream(b"x" * 25))
+        return httpx.Response(200, stream=_ChunkedStream([b"x" * 25]))
 
     with pytest.raises(PermanentError, match="exceeds 24 bytes"):
         _fetch("https://news.example.com/p/huge", handler)
 
     assert len(seen) == 2
+
+
+def test_the_size_cap_accumulates_across_many_small_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "max_article_bytes", 9)
+    stream = _ChunkedStream([b"12345", b"67890", b"still-more"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return _robots()
+        return httpx.Response(200, stream=stream)
+
+    with pytest.raises(PermanentError, match="exceeds 9 bytes"):
+        _fetch("https://news.example.com/p/chunked", handler)
+
+    assert stream.consumed == 2
 
 
 def test_a_body_at_the_size_cap_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,25 +306,170 @@ def test_redirects_are_followed_and_the_final_url_is_returned() -> None:
     ]
 
 
+def test_an_allowed_multi_hop_chain_checks_each_hosts_robots() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        host = request.url.host
+        if request.url.path == "/robots.txt":
+            if host == "news.example.com":
+                return _robots(200, "User-agent: *\nDisallow: /private\n")
+            return _robots()
+        if host == "news.example.com" and request.url.path == "/p/start":
+            return httpx.Response(302, headers={"Location": "https://mirror.example.net/q/next"})
+        if host == "mirror.example.net" and request.url.path == "/q/next":
+            return httpx.Response(302, headers={"Location": "https://news.example.com/p/final"})
+        return httpx.Response(200, text="<article>the final post</article>")
+
+    assert _fetch("https://news.example.com/p/start", handler) == (
+        "https://news.example.com/p/final",
+        "<article>the final post</article>",
+    )
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/start",
+        "https://mirror.example.net/robots.txt",
+        "https://mirror.example.net/q/next",
+        "https://news.example.com/p/final",
+    ]
+
+
+def test_an_off_allowlist_redirect_is_never_requested() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots()
+        return httpx.Response(302, headers={"Location": "https://evil.example.org/p/secret"})
+
+    with pytest.raises(PermanentError, match="allowlist"):
+        _fetch("https://news.example.com/p/open", handler)
+
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/open",
+    ]
+
+
+def test_a_redirect_to_the_cloud_metadata_address_is_never_requested() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots()
+        return httpx.Response(302, headers={"Location": "http://169.254.169.254/latest/meta-data"})
+
+    with pytest.raises(PermanentError, match="allowlist"):
+        _fetch("https://news.example.com/p/open", handler)
+
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/open",
+    ]
+
+
+def test_a_same_host_redirect_into_a_disallowed_path_is_never_requested() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots(200, "User-agent: *\nDisallow: /private\n")
+        return httpx.Response(302, headers={"Location": "https://news.example.com/private/x"})
+
+    with pytest.raises(PermanentError, match="robots.txt disallows"):
+        _fetch("https://news.example.com/p/open", handler)
+
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/open",
+    ]
+
+
+def test_a_non_http_redirect_is_never_requested() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots()
+        return httpx.Response(302, headers={"Location": "file:///etc/passwd"})
+
+    with pytest.raises(PermanentError, match="only http\\(s\\) URLs"):
+        _fetch("https://news.example.com/p/open", handler)
+
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/open",
+    ]
+
+
+def test_a_redirect_chain_over_the_hop_limit_stops_before_the_next_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "max_redirects", 2)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots()
+        index = int(request.url.path.rsplit("/", 1)[-1])
+        return httpx.Response(302, headers={"Location": f"https://news.example.com/p/{index + 1}"})
+
+    with pytest.raises(PermanentError, match="exceeds 2 hops"):
+        _fetch("https://news.example.com/p/0", handler)
+
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/0",
+        "https://news.example.com/p/1",
+        "https://news.example.com/p/2",
+    ]
+
+
 @pytest.mark.parametrize(
-    ("status", "permanent"),
-    [(403, True), (404, True), (408, False), (429, False), (503, False)],
-    ids=["403", "404", "408", "429", "503"],
+    ("status", "outcome"),
+    [
+        (399, "page"),
+        (400, "permanent"),
+        (407, "permanent"),
+        (408, "retriable"),
+        (409, "permanent"),
+        (428, "permanent"),
+        (429, "retriable"),
+        (430, "permanent"),
+        (499, "permanent"),
+        (500, "retriable"),
+        (599, "retriable"),
+    ],
+    ids=["399", "400", "407", "408", "409", "428", "429", "430", "499", "500", "599"],
 )
-def test_http_status_classes_are_permanent_only_for_other_4xx(status: int, permanent: bool) -> None:
+def test_http_status_boundaries(status: int, outcome: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
             return _robots()
-        return httpx.Response(status, text="failure body")
+        return httpx.Response(status, text="response body")
 
-    if permanent:
+    if outcome == "page":
+        assert _fetch("https://news.example.com/p/post", handler) == (
+            "https://news.example.com/p/post",
+            "response body",
+        )
+        return
+
+    if outcome == "permanent":
         with pytest.raises(PermanentError, match=f"HTTP {status}"):
             _fetch("https://news.example.com/p/post", handler)
-    else:
-        with pytest.raises(httpx.HTTPStatusError) as raised:
-            _fetch("https://news.example.com/p/post", handler)
-        assert raised.value.response.status_code == status
-        assert not isinstance(raised.value, PermanentError)
+        return
+
+    with pytest.raises(httpx.HTTPStatusError) as raised:
+        _fetch("https://news.example.com/p/post", handler)
+    assert raised.value.response.status_code == status
+    assert not isinstance(raised.value, PermanentError)
 
 
 @pytest.mark.parametrize("where", ["robots", "article"], ids=["robots", "article"])
@@ -238,7 +496,11 @@ def test_the_production_fetcher_shares_one_robots_cache_between_runs(
         return httpx.Response(200, text="<article>a full post</article>")
 
     for path in ("/p/first", "/p/second"):
-        _fetch(f"https://across-runs.example.com{path}", handler, use_production_cache=True)
+        _fetch(
+            f"https://across-runs.example.com{path}",
+            handler,
+            use_production_cache=True,
+        )
 
     assert [url for url in seen if url.endswith("/robots.txt")] == [
         "https://across-runs.example.com/robots.txt"
@@ -284,7 +546,7 @@ def test_a_permanent_fetch_failure_reaches_the_registered_handler_as_non_retriab
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
-        assert request.headers["user-agent"] == USER_AGENT
+        assert request.headers["user-agent"] == settings.user_agent
         if request.url.path == "/robots.txt":
             return _robots()
         return httpx.Response(403, text="forbidden")
@@ -314,3 +576,24 @@ def test_a_transient_fetch_failure_reaches_the_registered_handler_as_retriable(
 
     assert raised.value.response.status_code == 503
     assert not isinstance(raised.value, inngest.NonRetriableError)
+
+
+def test_the_registered_handler_rejects_an_off_allowlist_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(inngest_app, "_robots_cache", RobotsCache())
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots()
+        return httpx.Response(302, headers={"Location": "https://evil.example.org/p/x"})
+
+    with pytest.raises(inngest.NonRetriableError, match="allowlist"):
+        asyncio.run(handle_ingest_article(_context(), transport=httpx.MockTransport(handler)))
+
+    assert seen == [
+        "https://www.decodingai.com/robots.txt",
+        "https://www.decodingai.com/p/test",
+    ]

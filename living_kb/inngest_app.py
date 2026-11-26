@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
@@ -19,7 +19,7 @@ from living_kb.pipelines.ingest import IngestPorts, ingest_article
 from living_kb.sources.embedder import EmbeddingClient, OpenAIEmbedder
 from living_kb.sources.fetcher import HttpxFetcher as HttpxFetcher
 from living_kb.sources.fetcher import RobotsCache
-from living_kb.sources.publications import load_publications
+from living_kb.sources.publications import Publication, load_publications
 
 logger = logging.getLogger("living_kb.inngest")
 publications = load_publications(settings.publications_registry_path)
@@ -45,15 +45,20 @@ async def article_fetcher(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     robots_cache: RobotsCache | None = None,
+    allowed_publications: Sequence[Publication] | None = None,
 ) -> AsyncIterator[HttpxFetcher]:
     """Build the production fetcher: one polite client, shared robots cache."""
     async with httpx.AsyncClient(
         headers={"User-Agent": settings.user_agent},
         timeout=settings.request_timeout_seconds,
-        follow_redirects=True,
+        follow_redirects=False,
         transport=transport,
     ) as client:
-        yield HttpxFetcher(client, robots_cache=robots_cache or _robots_cache)
+        yield HttpxFetcher(
+            client,
+            publications=publications if allowed_publications is None else allowed_publications,
+            robots_cache=robots_cache or _robots_cache,
+        )
 
 
 class LazyEmbedder:
@@ -113,7 +118,9 @@ async def handle_ingest_article(
     _log("ingest-article started", run_id, canonical_id=ctx.event.data.get("canonical_id"))
 
     async def pipeline(runner: StepRunner) -> dict[str, int]:
-        async with article_fetcher(transport=transport) as fetcher:
+        async with article_fetcher(
+            transport=transport, allowed_publications=publications
+        ) as fetcher:
             ports = IngestPorts(
                 fetch_html=fetcher,
                 embed=LazyEmbedder(),

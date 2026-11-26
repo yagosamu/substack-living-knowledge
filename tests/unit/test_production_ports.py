@@ -6,6 +6,14 @@ import httpx
 
 from living_kb.config import settings
 from living_kb.inngest_app import HttpxFetcher
+from living_kb.sources.publications import Publication
+
+EXAMPLE = Publication(
+    slug="example",
+    name="Example Newsletter",
+    feed_url="https://www.example.com/feed",
+    homepage="https://www.example.com",
+)
 
 
 def test_fetcher_keeps_the_final_url_after_a_redirect() -> None:
@@ -25,9 +33,11 @@ def test_fetcher_keeps_the_final_url_after_a_redirect() -> None:
             transport=httpx.MockTransport(handler),
             headers={"User-Agent": settings.user_agent},
             timeout=settings.request_timeout_seconds,
-            follow_redirects=True,
+            follow_redirects=False,
         ) as client:
-            page = await HttpxFetcher(client)("https://www.example.com/p/old")
+            page = await HttpxFetcher(client, publications=[EXAMPLE])(
+                "https://www.example.com/p/old"
+            )
         return page.url, page.html
 
     url, html = asyncio.run(fetch())
