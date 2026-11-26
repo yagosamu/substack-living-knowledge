@@ -201,6 +201,7 @@ def test_the_ingest_handler_correlates_its_start_and_failure_lines(
     assert {started["function"], failed["function"]} == {"ingest-article"}
     assert "step" not in started
     assert "error" in failed
+    assert "Traceback (most recent call last)" in cast("str", failed["exception"])
     assert "PermanentError" in cast("str", failed["exception"])
 
 
@@ -499,6 +500,8 @@ def test_configured_handlers_are_replaced_not_duplicated() -> None:
         "import living_kb.api; "
         "from living_kb.logging import configure_logging; "
         "configure_logging(); "
+        "configure_logging(); "
+        "print('root-handlers', len(logging.getLogger().handlers)); "
         "logging.getLogger('uvicorn.error').info('exactly once')"
     )
     result = subprocess.run(
@@ -514,6 +517,7 @@ def test_configured_handlers_are_replaced_not_duplicated() -> None:
         if line.lstrip().startswith("{")
     ]
     assert [line["message"] for line in lines] == ["exactly once"]
+    assert "root-handlers 1" in (result.stdout + result.stderr).splitlines()
 
 
 def test_demo_durable_logs_through_the_seam(

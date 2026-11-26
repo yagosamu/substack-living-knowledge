@@ -96,7 +96,11 @@ class JournalRunner:
         function_name: str | None = None,
     ) -> T:
         """Run a pipeline, allowing a fresh attempt to replay the same journal."""
-        token = bind_run(run_id=run_id, function=function_name or "unknown") if run_id else None
+        token = (
+            bind_run(run_id=run_id, function=function_name)
+            if run_id is not None and function_name is not None
+            else None
+        )
         try:
             self._seen.clear()
             return await pipeline(self)
@@ -157,9 +161,12 @@ async def run_durable[T](
     function_name: str | None = None,
 ) -> T:
     """Run a durable function, correlating its logs and translating permanent failures."""
-    run_id = str(getattr(ctx, "run_id", "unknown"))
-    function = function_name or str(getattr(ctx, "function_id", "unknown"))
-    token = bind_run(run_id=run_id, function=function)
+    run_id = getattr(ctx, "run_id", None)
+    function = function_name or getattr(ctx, "function_id", None)
+    token = bind_run(
+        run_id=str(run_id) if run_id else None,
+        function=str(function) if function else None,
+    )
     try:
         return await pipeline(InngestRunner(ctx))
     except PermanentError as exc:

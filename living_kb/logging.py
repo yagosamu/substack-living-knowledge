@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import sys
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -109,10 +110,10 @@ def configure_logging() -> None:
     """Send application and ASGI logs through the JSON formatter exactly once."""
     formatter = JsonFormatter()
     root = logging.getLogger()
-    if not root.handlers:
-        root.addHandler(logging.StreamHandler())
-    for handler in root.handlers:
-        handler.setFormatter(formatter)
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+    root.handlers.clear()
+    root.addHandler(handler)
     root.setLevel(logging.INFO)
     for name in ("uvicorn", "uvicorn.access", "uvicorn.error", "inngest", "living_kb"):
         named = logging.getLogger(name)
