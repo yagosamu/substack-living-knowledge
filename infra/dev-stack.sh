@@ -16,7 +16,7 @@ case "${1:-}" in
   start)
     "${compose[@]}" up -d --wait
     uv run alembic upgrade head
-    exec uv run uvicorn living_kb.api:app --reload --host 0.0.0.0 --port "$API_PORT"
+    exec uv run uvicorn living_kb.api:app --reload --host 0.0.0.0 --port "$API_PORT" --log-config "$root/infra/log-config.json"
     ;;
   stop)
     "${compose[@]}" down

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, cast
 
@@ -11,7 +10,7 @@ import inngest
 
 from living_kb.config import settings
 from living_kb.db import SessionFactory
-from living_kb.durable import InngestRunner, StepRunner, run_durable
+from living_kb.durable import StepRunner, run_durable
 from living_kb.events import ARTICLE_DISCOVERED
 from living_kb.pipelines.ingest import FetchedPage, IngestPorts, ingest_article
 from living_kb.sources.embedder import EmbeddingClient, OpenAIEmbedder
@@ -29,10 +28,6 @@ inngest_client = inngest.Inngest(
     is_production=not settings.inngest_dev,
     logger=logging.getLogger("uvicorn.inngest"),
 )
-
-
-def _log(message: str, run_id: str, **fields: object) -> None:
-    logger.info(json.dumps({"message": message, "run_id": run_id, **fields}))
 
 
 class HttpxFetcher:
@@ -93,42 +88,48 @@ async def demo_pipeline(runner: StepRunner, *, name: str) -> dict[str, str]:
 )
 async def demo_durable(ctx: inngest.Context) -> dict[str, str]:
     """Run the demo pipeline with the real engine's step runner."""
-    return await demo_pipeline(InngestRunner(ctx), name=str(ctx.event.data["name"]))
+    return await run_durable(
+        ctx,
+        lambda runner: demo_pipeline(runner, name=str(ctx.event.data["name"])),
+        function_name="demo-durable",
+    )
 
 
 async def handle_ingest_article(ctx: inngest.Context) -> dict[str, int]:
     """Wire the production ports and run the six durable steps for one article."""
-    run_id = str(getattr(ctx, "run_id", "unknown"))
-    _log("ingest-article started", run_id, canonical_id=ctx.event.data.get("canonical_id"))
 
     async def pipeline(runner: StepRunner) -> dict[str, int]:
-        async with httpx.AsyncClient(
-            headers={"User-Agent": settings.user_agent},
-            timeout=settings.request_timeout_seconds,
-            follow_redirects=True,
-        ) as client:
-            ports = IngestPorts(
-                fetch_html=HttpxFetcher(client),
-                embed=LazyEmbedder(),
-                send_event=InngestEventSender(),
-                session_factory=SessionFactory,
-                publications=publications,
-            )
-            return await ingest_article(runner, dict(ctx.event.data), ports)
+        logger.info(
+            "ingest-article started", extra={"canonical_id": ctx.event.data.get("canonical_id")}
+        )
+        try:
+            async with httpx.AsyncClient(
+                headers={"User-Agent": settings.user_agent},
+                timeout=settings.request_timeout_seconds,
+                follow_redirects=True,
+            ) as client:
+                ports = IngestPorts(
+                    fetch_html=HttpxFetcher(client),
+                    embed=LazyEmbedder(),
+                    send_event=InngestEventSender(),
+                    session_factory=SessionFactory,
+                    publications=publications,
+                )
+                result = await ingest_article(runner, dict(ctx.event.data), ports)
+        except Exception as exc:
+            logger.exception("ingest-article failed", extra={"error": str(exc)})
+            raise
 
-    try:
-        result = await run_durable(ctx, pipeline)
-    except Exception as exc:
-        _log("ingest-article failed", run_id, error=str(exc))
-        raise
+        logger.info(
+            "ingest-article completed",
+            extra={
+                "article_id": result["article_id"],
+                "passage_count": result["passage_count"],
+            },
+        )
+        return result
 
-    _log(
-        "ingest-article completed",
-        run_id,
-        article_id=result["article_id"],
-        passage_count=result["passage_count"],
-    )
-    return result
+    return await run_durable(ctx, pipeline, function_name="ingest-article")
 
 
 @inngest_client.create_function(

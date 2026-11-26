@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol, cast, overload
 
 from living_kb.config import settings
+from living_kb.logging import bind_run, bind_step, reset
 
 if TYPE_CHECKING:
     import inngest
@@ -65,28 +66,43 @@ class JournalRunner:
     @overload
     async def run[T](self, name: str, fn: Callable[[], T]) -> T: ...
     async def run(self, name: str, fn: Callable[[], object]) -> object:
-        if name in self._seen:
-            raise ValueError(f"duplicate step name: {name}")
-        self._seen.add(name)
+        token = bind_step(name)
+        try:
+            if name in self._seen:
+                raise ValueError(f"duplicate step name: {name}")
+            self._seen.add(name)
 
-        after_side_effect = self._pending_failures.pop(name, None)
-        if after_side_effect is True:
-            await _call_step(fn)
-            raise InjectedFailure(f"injected failure after side effect in step {name!r}")
-        if after_side_effect is False:
-            raise InjectedFailure(f"injected failure in step {name!r}")
+            after_side_effect = self._pending_failures.pop(name, None)
+            if after_side_effect is True:
+                await _call_step(fn)
+                raise InjectedFailure(f"injected failure after side effect in step {name!r}")
+            if after_side_effect is False:
+                raise InjectedFailure(f"injected failure in step {name!r}")
 
-        if name in self._journal:
-            return cast(object, json.loads(self._journal[name]))
+            if name in self._journal:
+                return cast(object, json.loads(self._journal[name]))
 
-        payload = _journal_payload(name, await _call_step(fn), self._max_output_bytes)
-        self._journal[name] = payload
-        return cast(object, json.loads(payload))
+            payload = _journal_payload(name, await _call_step(fn), self._max_output_bytes)
+            self._journal[name] = payload
+            return cast(object, json.loads(payload))
+        finally:
+            reset(token)
 
-    async def execute[T](self, pipeline: Callable[[StepRunner], Awaitable[T]]) -> T:
+    async def execute[T](
+        self,
+        pipeline: Callable[[StepRunner], Awaitable[T]],
+        *,
+        run_id: str | None = None,
+        function_name: str | None = None,
+    ) -> T:
         """Run a pipeline, allowing a fresh attempt to replay the same journal."""
-        self._seen.clear()
-        return await pipeline(self)
+        token = bind_run(run_id=run_id, function=function_name or "unknown") if run_id else None
+        try:
+            self._seen.clear()
+            return await pipeline(self)
+        finally:
+            if token is not None:
+                reset(token)
 
     def fail_next(
         self,
@@ -127,17 +143,28 @@ class InngestRunner:
             except PermanentError as exc:
                 raise inngest_sdk.NonRetriableError(str(exc)) from exc
 
-        return await self._ctx.step.run(name, handler)
+        token = bind_step(name)
+        try:
+            return await self._ctx.step.run(name, handler)
+        finally:
+            reset(token)
 
 
 async def run_durable[T](
     ctx: inngest.Context,
     pipeline: Callable[[StepRunner], Awaitable[T]],
+    *,
+    function_name: str | None = None,
 ) -> T:
-    """Run a durable function and make a PermanentError anywhere non-retriable."""
+    """Run a durable function, correlating its logs and translating permanent failures."""
+    run_id = str(getattr(ctx, "run_id", "unknown"))
+    function = function_name or str(getattr(ctx, "function_id", "unknown"))
+    token = bind_run(run_id=run_id, function=function)
     try:
         return await pipeline(InngestRunner(ctx))
     except PermanentError as exc:
         import inngest as inngest_sdk
 
         raise inngest_sdk.NonRetriableError(str(exc)) from exc
+    finally:
+        reset(token)
