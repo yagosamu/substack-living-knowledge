@@ -7,7 +7,10 @@ from typing import Any, cast
 
 import httpx
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from conftest import (
+    ALEMBIC_INI,
     ZERO_VECTOR,
     create_test_database,
     database_exists,
@@ -151,7 +154,11 @@ def test_creates_and_migrates_missing_database() -> None:
     try:
         migrate_test_database(scratch_url)
         version, tables = asyncio.run(inspect())
-        assert version == "0001_initial_schema"
+        config = Config(str(ALEMBIC_INI))
+        config.set_main_option(
+            "script_location", str(ALEMBIC_INI.parent / "living_kb" / "migrations")
+        )
+        assert version == ScriptDirectory.from_config(config).get_current_head()
         assert {"publications", "articles", "passages", "jobs", "costs"} <= tables
     finally:
         asyncio.run(cleanup())

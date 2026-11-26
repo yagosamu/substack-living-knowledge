@@ -21,6 +21,7 @@ from living_kb.events import (
     ArticleIngested,
 )
 from living_kb.sources.chunking import chunk_text
+from living_kb.sources.embedder import EmbeddedTexts
 from living_kb.sources.parser import parse_article
 from living_kb.sources.publications import NotAllowedError, Publication, assert_allowed
 
@@ -36,7 +37,7 @@ class FetchHtml(Protocol):
 
 
 class Embed(Protocol):
-    async def __call__(self, texts: list[str]) -> list[list[float]]: ...
+    async def __call__(self, texts: list[str]) -> EmbeddedTexts: ...
 
 
 class SendEvent(Protocol):
@@ -93,8 +94,10 @@ async def _persist(
     event: ArticleDiscovered,
     parsed: ArticlePayload,
     chunks: list[str],
-    vectors: list[list[float]],
+    embedded: EmbeddedTexts,
 ) -> PersistPayload:
+    vectors = embedded["vectors"]
+    usage = embedded["usage"]
     if len(chunks) != len(vectors):
         raise ValueError("each chunk needs exactly one embedding")
 
@@ -158,6 +161,24 @@ async def _persist(
                     "embedding": embedding,
                 },
             )
+        await session.execute(
+            text(
+                """
+                INSERT INTO costs (
+                    article_id, model, input_tokens, output_tokens, estimated_usd
+                ) VALUES (
+                    :article_id, :model, :input_tokens, 0, :estimated_usd
+                )
+                ON CONFLICT (article_id) WHERE article_id IS NOT NULL DO NOTHING
+                """
+            ),
+            {
+                "article_id": article_pk,
+                "model": usage["model"],
+                "input_tokens": usage["input_tokens"],
+                "estimated_usd": usage["estimated_usd"],
+            },
+        )
     return {
         "article_id": article_pk,
         "content_hash": parsed["content_hash"],
@@ -198,10 +219,10 @@ async def ingest_article(
         "chunk",
         lambda: chunk_text(parsed["text"], settings.chunk_size, settings.chunk_overlap),
     )
-    vectors = await runner.run("embed", lambda: ports.embed(chunks))
+    embedded = await runner.run("embed", lambda: ports.embed(chunks))
     persisted = await runner.run(
         "persist",
-        lambda: _persist(ports.session_factory, discovered, parsed, chunks, vectors),
+        lambda: _persist(ports.session_factory, discovered, parsed, chunks, embedded),
     )
     await runner.run("emit", lambda: _emit(discovered, persisted, ports.send_event))
     return {"article_id": persisted["article_id"], "passage_count": persisted["passage_count"]}

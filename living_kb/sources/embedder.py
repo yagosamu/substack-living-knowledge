@@ -3,7 +3,25 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol, cast
+from typing import Protocol, TypedDict, cast
+
+
+class EmbeddingUsage(TypedDict):
+    """The small, JSON-serializable usage record journaled with the vectors."""
+
+    model: str
+    input_tokens: int
+    estimated_usd: float
+
+
+class EmbeddedTexts(TypedDict):
+    vectors: list[list[float]]
+    usage: EmbeddingUsage
+
+
+class EmbeddingTokenUsage(Protocol):
+    @property
+    def prompt_tokens(self) -> int: ...
 
 
 class EmbeddingItem(Protocol):
@@ -17,6 +35,9 @@ class EmbeddingItem(Protocol):
 class EmbeddingResponse(Protocol):
     @property
     def data(self) -> Sequence[EmbeddingItem]: ...
+
+    @property
+    def usage(self) -> EmbeddingTokenUsage: ...
 
 
 class Embeddings(Protocol):
@@ -40,6 +61,7 @@ class OpenAIEmbedder:
         model: str,
         dimensions: int,
         batch_size: int,
+        price_per_million_tokens: float,
     ) -> None:
         if batch_size < 1:
             raise ValueError("batch_size must be positive")
@@ -49,12 +71,17 @@ class OpenAIEmbedder:
         self._model = model
         self._dimensions = dimensions
         self._batch_size = batch_size
+        self._price_per_million_tokens = price_per_million_tokens
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str]) -> EmbeddedTexts:
         if not texts:
-            return []
+            return {
+                "vectors": [],
+                "usage": {"model": self._model, "input_tokens": 0, "estimated_usd": 0.0},
+            }
 
         vectors: list[list[float] | None] = [None] * len(texts)
+        input_tokens = 0
         for start in range(0, len(texts), self._batch_size):
             batch = texts[start : start + self._batch_size]
             response = await self._client.embeddings.create(
@@ -62,9 +89,19 @@ class OpenAIEmbedder:
                 model=self._model,
                 dimensions=self._dimensions,
             )
+            input_tokens += response.usage.prompt_tokens
             items = sorted(response.data, key=lambda item: item.index)
             if len(items) != len(batch):
                 raise ValueError("embedding response does not match the input batch")
             for offset, item in enumerate(items):
                 vectors[start + offset] = list(item.embedding)
-        return cast("list[list[float]]", vectors)
+        return {
+            "vectors": cast("list[list[float]]", vectors),
+            "usage": {
+                "model": self._model,
+                "input_tokens": input_tokens,
+                "estimated_usd": round(
+                    input_tokens / 1_000_000 * self._price_per_million_tokens, 6
+                ),
+            },
+        }
