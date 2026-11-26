@@ -264,7 +264,8 @@ def test_the_uvicorn_log_config_renders_json_before_the_app_is_imported() -> Non
     script = (
         "import json, logging, logging.config, sys; "
         "logging.config.dictConfig(json.load(open(sys.argv[1]))); "
-        "logging.getLogger('uvicorn.error').info('pre-app startup')"
+        "logging.getLogger('uvicorn.error').info('pre-app startup'); "
+        "logging.getLogger('living_kb.api').info('pre-app app')"
     )
     result = subprocess.run(
         [sys.executable, "-c", script, str(config_path)],
@@ -278,8 +279,9 @@ def test_the_uvicorn_log_config_renders_json_before_the_app_is_imported() -> Non
         for line in (result.stdout + result.stderr).splitlines()
         if line.lstrip().startswith("{")
     ]
-    assert [line["message"] for line in lines] == ["pre-app startup"]
-    assert set(lines[0]) == {"timestamp", "level", "logger", "message"}
+    assert [line["message"] for line in lines] == ["pre-app startup", "pre-app app"]
+    for line in lines:
+        assert set(line) == {"timestamp", "level", "logger", "message"}
 
 
 def test_importing_the_api_installs_json_output_for_startup_logs() -> None:
