@@ -32,6 +32,7 @@ def json_lines(
         "living_kb.api",
         "living_kb.inngest",
         "living_kb.edge",
+        "uvicorn.error",
     ):
         named = logging.getLogger(name)
         monkeypatch.setattr(named, "disabled", False)
@@ -199,6 +200,8 @@ def test_the_ingest_handler_correlates_its_start_and_failure_lines(
     assert {started["run_id"], failed["run_id"]} == {"handler-run-5"}
     assert {started["function"], failed["function"]} == {"ingest-article"}
     assert "step" not in started
+    assert "error" in failed
+    assert "PermanentError" in cast("str", failed["exception"])
 
 
 def test_sequential_runs_do_not_inherit_the_previous_context(
@@ -275,7 +278,7 @@ def test_the_uvicorn_log_config_renders_json_before_the_app_is_imported() -> Non
         if line.lstrip().startswith("{")
     ]
     assert [line["message"] for line in lines] == ["pre-app startup"]
-    assert "run_id" not in lines[0]
+    assert set(lines[0]) == {"timestamp", "level", "logger", "message"}
 
 
 def test_importing_the_api_installs_json_output_for_startup_logs() -> None:
@@ -298,3 +301,295 @@ def test_importing_the_api_installs_json_output_for_startup_logs() -> None:
     assert {line["logger"] for line in chosen} == {"uvicorn.error", "living_kb.inngest"}
     for line in chosen:
         assert CONTEXT_KEYS.isdisjoint(line)
+
+
+class BareContext:
+    """A context with no run id and no function id, like the older contract fakes."""
+
+    def __init__(self) -> None:
+        self.step = FakeStep()
+        self.event = FakeEvent({})
+
+
+class Opaque:
+    def __init__(self, value: str = "opaque") -> None:
+        self.value = value
+
+    def __str__(self) -> str:
+        return self.value
+
+
+def test_a_raised_journal_step_does_not_leak_its_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def bad() -> str:
+        log.info("inside bad")
+        raise ValueError("bad step")
+
+    async def pipeline(runner: StepRunner) -> None:
+        with pytest.raises(ValueError):
+            await runner.run("bad-step", bad)
+        log.info("after bad")
+
+    asyncio.run(
+        JournalRunner().execute(pipeline, run_id="journal-run-9", function_name="journal-fn")
+    )
+
+    lines = payloads(caplog)
+    assert [line["message"] for line in lines] == ["inside bad", "after bad"]
+    assert lines[0]["step"] == "bad-step"
+    assert "step" not in lines[1]
+
+
+def test_a_raised_production_step_does_not_leak_its_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def bad() -> str:
+        log.info("inside bad")
+        raise ValueError("bad step")
+
+    def good() -> str:
+        log.info("inside good")
+        return "ok"
+
+    async def pipeline(runner: StepRunner) -> None:
+        with pytest.raises(ValueError):
+            await runner.run("bad-step", bad)
+        log.info("between steps")
+        await runner.run("good-step", good)
+        log.info("after steps")
+
+    asyncio.run(run_durable(context("prod-run-9"), pipeline, function_name="ingest-article"))
+
+    lines = payloads(caplog)
+    assert [line.get("step") for line in lines] == ["bad-step", None, "good-step", None]
+    for line in (lines[1], lines[3]):
+        assert "step" not in line
+    assert {line["run_id"] for line in lines} == {"prod-run-9"}
+
+
+def test_execute_resets_the_run_context_even_when_the_pipeline_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def boom(runner: StepRunner) -> str:
+        log.info("inside boom")
+        raise RuntimeError("boom")
+
+    async def okay(runner: StepRunner) -> str:
+        log.info("inside okay")
+        return "ok"
+
+    async def scenario() -> None:
+        runner = JournalRunner()
+        with pytest.raises(RuntimeError):
+            await runner.execute(boom, run_id="first-run", function_name="first-fn")
+        logging.getLogger("living_kb.api").info("between executes")
+        assert (
+            await JournalRunner().execute(okay, run_id="second-run", function_name="second-fn")
+            == "ok"
+        )
+
+    asyncio.run(scenario())
+
+    first, between, second = payloads(caplog)
+    assert (first["run_id"], first["function"]) == ("first-run", "first-fn")
+    assert CONTEXT_KEYS.isdisjoint(between)
+    assert (second["run_id"], second["function"]) == ("second-run", "second-fn")
+
+
+def test_execute_binds_only_a_complete_run_context(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def pipeline(runner: StepRunner) -> str:
+        log.info("hello")
+        return "done"
+
+    asyncio.run(JournalRunner().execute(pipeline, run_id="run-without-function"))
+    asyncio.run(JournalRunner().execute(pipeline, function_name="fn-without-run"))
+
+    lines = payloads(caplog)
+    assert len(lines) == 2
+    for line in lines:
+        assert CONTEXT_KEYS.isdisjoint(line)
+
+
+def test_missing_engine_ids_are_omitted_instead_of_becoming_unknown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def pipeline(runner: StepRunner) -> str:
+        log.info("no ids here")
+        return "done"
+
+    asyncio.run(run_durable(cast("inngest.Context", BareContext()), pipeline))
+
+    (line,) = payloads(caplog)
+    assert CONTEXT_KEYS.isdisjoint(line)
+    assert "unknown" not in json.dumps(line)
+
+
+def test_caller_extras_are_kept_but_cannot_forge_context_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    forged = {
+        "run_id": "forged-run",
+        "function": "forged-fn",
+        "step": "forged-step",
+        "canonical_id": "kb:pub:post",
+        "article_id": 7,
+    }
+
+    logging.getLogger("living_kb.edge").info("outside", extra=forged)
+
+    async def pipeline(runner: StepRunner) -> str:
+        log.info("inside", extra=forged)
+        return "done"
+
+    asyncio.run(JournalRunner().execute(pipeline, run_id="real-run", function_name="real-fn"))
+
+    outside, inside = payloads(caplog)
+    assert (outside["canonical_id"], outside["article_id"]) == ("kb:pub:post", 7)
+    assert CONTEXT_KEYS.isdisjoint(outside)
+    assert (inside["canonical_id"], inside["article_id"]) == ("kb:pub:post", 7)
+    assert (inside["run_id"], inside["function"]) == ("real-run", "real-fn")
+    assert "step" not in inside
+
+
+def test_non_json_extras_do_not_drop_the_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logging.getLogger("living_kb.edge").info(
+        "odd extras",
+        extra={"when": datetime(2024, 1, 2, 3, 4, 5), "opaque": Opaque()},
+    )
+
+    (line,) = payloads(caplog)
+    assert line["message"] == "odd extras"
+    assert line["when"] == "2024-01-02 03:04:05"
+    assert line["opaque"] == "opaque"
+
+
+def test_exception_and_stack_info_are_both_kept(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        logging.getLogger("living_kb.edge").error("with both", exc_info=True, stack_info=True)
+
+    (line,) = payloads(caplog)
+    assert "ValueError: boom" in cast("str", line["exception"])
+    assert "Stack (most recent call last):" in cast("str", line["stack"])
+
+
+def test_color_message_extra_is_not_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logging.getLogger("uvicorn.error").info("ansi", extra={"color_message": "\x1b[36mansi\x1b[0m"})
+
+    (line,) = payloads(caplog)
+    assert line["message"] == "ansi"
+    assert set(line) == {"timestamp", "level", "logger", "message"}
+
+
+def test_configured_handlers_are_replaced_not_duplicated() -> None:
+    config_path = Path(__file__).resolve().parents[2] / "infra" / "log-config.json"
+    script = (
+        "import json, logging, logging.config, sys; "
+        "logging.config.dictConfig(json.load(open(sys.argv[1]))); "
+        "import living_kb.api; "
+        "from living_kb.logging import configure_logging; "
+        "configure_logging(); "
+        "logging.getLogger('uvicorn.error').info('exactly once')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(config_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    lines = [
+        cast("dict[str, Any]", json.loads(line))
+        for line in (result.stdout + result.stderr).splitlines()
+        if line.lstrip().startswith("{")
+    ]
+    assert [line["message"] for line in lines] == ["exactly once"]
+
+
+def test_demo_durable_logs_through_the_seam(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from living_kb import inngest_app
+
+    async def pipeline(runner: StepRunner, *, name: str) -> dict[str, str]:
+        log.info("demo %s", name)
+        return await runner.run("greet", lambda: {"greeting": name.upper()})
+
+    monkeypatch.setattr(inngest_app, "demo_pipeline", pipeline)
+
+    result = asyncio.run(
+        cast("Any", inngest_app.demo_durable)._handler(context("demo-run-3", {"name": "ada"}))
+    )
+
+    assert result == {"greeting": "ADA"}
+    lines = payloads(caplog)
+    assert {line["run_id"] for line in lines} == {"demo-run-3"}
+    assert {line["function"] for line in lines} == {"demo-durable"}
+
+
+def test_ingest_completed_line_keeps_its_extras(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from living_kb import inngest_app
+
+    async def fake_ingest(
+        runner: StepRunner, data: dict[str, object], ports: object
+    ) -> dict[str, int]:
+        await runner.run("noop", lambda: 1)
+        return {"article_id": 9, "passage_count": 3}
+
+    monkeypatch.setattr(inngest_app, "ingest_article", fake_ingest)
+
+    asyncio.run(
+        inngest_app.handle_ingest_article(
+            context("complete-run-1", {"canonical_id": "kb:pub:post"})
+        )
+    )
+
+    completed = [line for line in payloads(caplog) if line["message"] == "ingest-article completed"]
+    assert len(completed) == 1
+    assert (completed[0]["article_id"], completed[0]["passage_count"]) == (9, 3)
+
+
+def test_secret_settings_are_redacted_everywhere(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from living_kb.config import settings
+
+    database_url = "postgresql+asyncpg://reader:hunter2secret@db:5432/kb"
+    openai_key = "sk-fake-openai-123456"
+    event_key = "evt-fake-inngest-123456"
+    signing_key = "sign-fake-inngest-654321"
+    monkeypatch.setattr(settings, "openai_api_key", openai_key)
+    monkeypatch.setattr(settings, "inngest_event_key", event_key)
+    monkeypatch.setattr(settings, "inngest_signing_key", signing_key)
+    monkeypatch.setattr(settings, "postgres_password", "hunter2secret")
+    monkeypatch.setattr(settings, "database_url", database_url)
+
+    try:
+        raise ValueError(f"failure mentioning {openai_key}")
+    except ValueError:
+        logging.getLogger("living_kb.edge").error(
+            f"{openai_key} {event_key} {signing_key} {database_url}",
+            extra={
+                "payload": {"token": signing_key},
+                "opaque": Opaque(openai_key),
+            },
+            exc_info=True,
+        )
+
+    rendered = caplog.text
+    for secret in (openai_key, event_key, signing_key, "hunter2secret", database_url):
+        assert secret not in rendered
+    assert "[REDACTED]" in rendered
+    assert len(payloads(caplog)) == 1
