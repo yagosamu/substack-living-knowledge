@@ -33,6 +33,12 @@ Pick inputs where the right and the wrong implementation give different answers.
 - **Every behaviour the fake provides must also be provided by the production path,** with a test through the production adapter or entry point. *(#5: only the fake rejected duplicate names. #6: a `PermanentError` raised outside a step was never made non-retriable, because translation lived only inside steps.)*
 - **Rules in an ADR need an enforcing test,** or they are wishes. *(#6: "step outputs are small" was violated by journaling the full HTML and every vector.)*
 
+## 4b. Test the wiring, not only the logic
+
+- **Logic tested in isolation proves nothing about how it is invoked.** Make targets, Compose files and shell wrappers are code. Assert on the command each target would actually run (`make -n`, a print/plan target, or fake `docker`/`uv` shims). *(#31: every Python function was tested, and all six Make/Compose/shell mutants survived: a hard-coded project name, port 8000, the Inngest URL.)*
+- **Assert the whole command, not a substring that also matches the wrong one.** *(#31: the `make stop` assertion also matched `down -v`, which would delete the volume.)*
+- **Example and default files are inputs too.** A documented `cp .env.example .env` must not silently override derived behaviour. Test with a fresh copy of every example file the docs tell people to use. *(#31: `.env.example` pinned the main-checkout ports in every worktree.)*
+
 ## 5. Seed mutants from this list, not from imagination
 
 For every pipeline, plant at least these mutants, in addition to your own:
@@ -43,7 +49,8 @@ For every pipeline, plant at least these mutants, in addition to your own:
 - take each field from its other plausible source (event vs page, requested vs final URL);
 - change the input of each derived value (a hash over the HTML vs over the text);
 - drop the last partial batch, ignore the batch size, skip reordering;
-- store or return a live object instead of a copy.
+- store or return a live object instead of a copy;
+- hard-code each derived value in the wiring layer (project name, ports, URLs) and bypass each wrapper.
 
 Then let the reviewer plant theirs. The reviewer's survivors, not yours, decide whether the contract is done.
 
@@ -57,5 +64,6 @@ The throwaway implementation that proves a contract reachable shares its author'
 - [ ] Every assertion checks the property itself (section 2).
 - [ ] Zero, empty, limits and each failure class have a test (section 3).
 - [ ] Engine behaviour was checked against the real SDK, and every fake behaviour has a production-path test (section 4).
+- [ ] Make/Compose/shell wiring and every documented example file are exercised by a test (section 4b).
 - [ ] Every mutant in section 5 was planted and killed.
 - [ ] Every ADR rule the task touches has an enforcing test (section 4).
