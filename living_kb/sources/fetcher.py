@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, cast
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
 import httpx
@@ -47,29 +47,53 @@ def _empty_robots() -> RobotFileParser:
     return parser
 
 
-def _apply_longest_match(parser: RobotFileParser) -> RobotFileParser:
-    entries = cast("list[Any]", getattr(parser, "entries", []))
-    default = getattr(parser, "default_entry", None)
-    if default is not None:
-        entries.append(default)
-    for entry in entries:
-        for attribute in ("rulelines", "rules"):
-            rules = getattr(entry, attribute, None)
-            if rules is not None:
-                cast("list[Any]", rules).sort(
-                    key=lambda rule: (-len(getattr(rule, "path", "")), not rule.allowance)
-                )
-    return parser
+def _compile_rule(path: str) -> re.Pattern[str]:
+    parts: list[str] = []
+    for index, char in enumerate(path):
+        if char == "*":
+            parts.append(".*")
+        elif char == "$" and index == len(path) - 1:
+            parts.append("$")
+        else:
+            parts.append(re.escape(char))
+    return re.compile("^" + "".join(parts))
+
+
+class _RobotsParser(RobotFileParser):
+    """RobotFileParser with RFC 9309 wildcards and longest-match rules."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rules: list[tuple[int, bool, re.Pattern[str]]] = []
+
+    def add_rule(self, allowance: bool, path: str) -> None:
+        if not path:
+            return
+        self._rules.append((len(path), allowance, _compile_rule(path)))
+
+    def can_fetch(self, useragent: str, url: str) -> bool:
+        parts = urlsplit(url)
+        target = unquote(parts.path or "/")
+        if parts.query:
+            target = f"{target}?{parts.query}"
+        matches = [
+            (length, allowance)
+            for length, allowance, pattern in self._rules
+            if pattern.match(target)
+        ]
+        if not matches:
+            return True
+        _, allowance = max(matches, key=lambda match: (match[0], match[1]))
+        return allowance
 
 
 def parse_robots(text: str, *, user_agent: str) -> RobotFileParser:
     """Return rules from our agent's group, falling back to the wildcard group.
 
-    ``urllib.robotparser`` parses and matches rules: it understands ``Allow``,
-    wildcards and empty rules without a new dependency. Its ``can_fetch`` uses
-    insertion order, so rules are sorted by longest path (with ``Allow`` winning
-    a tie) to follow RFC 9309. Groups are selected before parsing so a specific
-    agent wins even when a wildcard group appears first in the file.
+    Groups are selected before matching so a specific agent wins even when
+    ``*`` is listed first. ``urllib.robotparser`` does not support wildcards on
+    Python 3.12, so ``*`` and a trailing ``$`` are compiled here. Rules follow
+    RFC 9309 longest match, with ``Allow`` winning a tie; empty rules are ignored.
     """
     groups: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
     agents: list[str] = []
@@ -110,12 +134,12 @@ def parse_robots(text: str, *, user_agent: str) -> RobotFileParser:
         if any(declared.strip().lower() == "*" for declared in group_agents)
     ]
     selected = specific or wildcard
-    parser = RobotFileParser()
-    lines = ["User-agent: *"]
+    parser = _RobotsParser()
     for rules_for_group in selected:
-        lines.extend(rules_for_group)
-    parser.parse(lines)
-    return _apply_longest_match(parser)
+        for rule in rules_for_group:
+            name, _, value = rule.partition(":")
+            parser.add_rule(name.strip().lower() == "allow", value.strip())
+    return parser
 
 
 def _robots_url(url: str) -> str:
@@ -176,11 +200,23 @@ class HttpxFetcher:
         if cached is not None:
             return cached
 
-        robots_url = _robots_url(url)
-        response = await self._client.get(robots_url, follow_redirects=False)
-        parser = _robots_from_response(response, robots_url)
-        self._robots_cache.set(host, parser)
-        return parser
+        current = _robots_url(url)
+        for hop in range(settings.max_redirects + 1):
+            self._assert_hop_allowed(current)
+            response = await self._client.get(current, follow_redirects=False)
+            location = response.headers.get("location")
+            if response.status_code in _REDIRECT_STATUSES and location:
+                if hop == settings.max_redirects:
+                    raise httpx.TooManyRedirects(
+                        "robots.txt redirect chain from "
+                        f"{current} exceeds {settings.max_redirects} hops"
+                    )
+                current = urljoin(str(response.url), location)
+                continue
+            parser = _robots_from_response(response, current)
+            self._robots_cache.set(host, parser)
+            return parser
+        raise RuntimeError("unreachable robots redirect loop")
 
     async def _is_allowed_by_robots(self, url: str) -> bool:
         parser = await self._robots(url)

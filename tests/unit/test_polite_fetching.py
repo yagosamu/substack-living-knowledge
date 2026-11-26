@@ -162,6 +162,17 @@ def test_allow_rules_override_a_broader_disallow() -> None:
         _fetch("https://news.example.com/p/private/post", handler)
 
 
+def test_allow_wins_an_equal_length_tie() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return _robots(200, "User-agent: *\nDisallow: /p/public\nAllow: /p/public\n")
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    assert _fetch("https://news.example.com/p/public", handler)[1] == (
+        "<article>a full post</article>"
+    )
+
+
 def test_a_disallow_prefix_does_not_block_an_unrelated_path() -> None:
     cache = RobotsCache()
 
@@ -217,6 +228,159 @@ def test_robots_500_is_retriable_and_never_allows_the_article() -> None:
     assert raised.value.response.status_code == 500
     assert not isinstance(raised.value, PermanentError)
     assert seen == ["https://news.example.com/robots.txt"]
+
+
+def test_robots_txt_redirects_are_followed_and_the_final_rules_are_used() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return httpx.Response(301, headers={"Location": "/robots-final.txt"})
+        if request.url.path == "/robots-final.txt":
+            return httpx.Response(200, text="User-agent: *\nDisallow: /p/secret\n")
+        return httpx.Response(200, text="<article>the final post</article>")
+
+    with pytest.raises(PermanentError, match="robots.txt disallows"):
+        _fetch("https://news.example.com/p/secret", handler)
+
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/robots-final.txt",
+    ]
+
+
+def test_robots_redirect_is_cached_under_the_article_host() -> None:
+    cache = RobotsCache()
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return httpx.Response(301, headers={"Location": "/robots-final.txt"})
+        if request.url.path == "/robots-final.txt":
+            return _robots()
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    _fetch("https://news.example.com/p/first", handler, cache=cache)
+    _fetch("https://news.example.com/p/second", handler, cache=cache)
+
+    assert [url for url in seen if "robots" in url] == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/robots-final.txt",
+    ]
+
+
+def test_a_cross_host_robots_redirect_is_cached_under_the_article_host() -> None:
+    cache = RobotsCache()
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "news.example.com" and request.url.path == "/robots.txt":
+            return httpx.Response(
+                302, headers={"Location": "https://mirror.example.net/robots-final.txt"}
+            )
+        if request.url.path == "/robots-final.txt":
+            return _robots()
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    _fetch("https://news.example.com/p/first", handler, cache=cache)
+    _fetch("https://news.example.com/p/second", handler, cache=cache)
+
+    assert [url for url in seen if "robots" in url] == [
+        "https://news.example.com/robots.txt",
+        "https://mirror.example.net/robots-final.txt",
+    ]
+
+
+def test_an_off_allowlist_robots_redirect_is_never_requested() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"Location": "https://evil.example.org/robots.txt"})
+
+    with pytest.raises(PermanentError, match="allowlist"):
+        _fetch("https://news.example.com/p/post", handler)
+
+    assert seen == ["https://news.example.com/robots.txt"]
+
+
+def test_a_robots_redirect_chain_over_the_limit_stays_retriable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "max_redirects", 2)
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        locations = {
+            "/robots.txt": "/robots-1.txt",
+            "/robots-1.txt": "/robots-2.txt",
+            "/robots-2.txt": "/robots-3.txt",
+        }
+        if request.url.path in locations:
+            return httpx.Response(302, headers={"Location": locations[request.url.path]})
+        return httpx.Response(200, text="<article>the final post</article>")
+
+    with pytest.raises(httpx.TooManyRedirects) as raised:
+        _fetch("https://news.example.com/p/post", handler)
+
+    assert not isinstance(raised.value, PermanentError)
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/robots-1.txt",
+        "https://news.example.com/robots-2.txt",
+    ]
+
+
+def test_robots_400_with_a_disallow_body_still_means_no_rules() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots(400, "User-agent: *\nDisallow: /\n")
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    assert _fetch("https://news.example.com/p/post", handler) == (
+        "https://news.example.com/p/post",
+        "<article>a full post</article>",
+    )
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/post",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rule", "url", "allowed"),
+    [
+        ("Disallow: /*.pdf$", "https://news.example.com/report.pdf", False),
+        ("Disallow: /*.pdf$", "https://news.example.com/report.pdf?download=1", True),
+        ("Disallow: /p/*/draft", "https://news.example.com/p/2026/draft", False),
+        ("Disallow: /p/*/draft", "https://news.example.com/p/public/post", True),
+    ],
+    ids=["suffix", "suffix-anchored", "middle", "no-match"],
+)
+def test_robots_wildcards_and_end_anchors_follow_rfc_9309(
+    rule: str, url: str, allowed: bool
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots(200, f"User-agent: *\n{rule}\n")
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    if allowed:
+        assert _fetch(url, handler)[0] == url
+    else:
+        with pytest.raises(PermanentError, match="robots.txt disallows"):
+            _fetch(url, handler)
+    assert seen == ["https://news.example.com/robots.txt"] + ([] if not allowed else [url])
 
 
 class _ChunkedStream(httpx.AsyncByteStream):
@@ -284,7 +448,10 @@ def test_a_body_at_the_size_cap_is_accepted(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
 
-def test_redirects_are_followed_and_the_final_url_is_returned() -> None:
+@pytest.mark.parametrize(
+    "status", [301, 302, 303, 307, 308], ids=["301", "302", "303", "307", "308"]
+)
+def test_redirects_are_followed_and_the_final_url_is_returned(status: int) -> None:
     seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -292,7 +459,7 @@ def test_redirects_are_followed_and_the_final_url_is_returned() -> None:
         if request.url.path == "/robots.txt":
             return _robots()
         if request.url.path == "/p/old":
-            return httpx.Response(302, headers={"Location": "https://news.example.com/p/final"})
+            return httpx.Response(status, headers={"Location": "https://news.example.com/p/final"})
         return httpx.Response(200, text="<article>the final post</article>")
 
     assert _fetch("https://news.example.com/p/old", handler) == (
@@ -317,6 +484,32 @@ def test_the_final_url_is_taken_from_the_response_not_the_redirect_string() -> N
     assert _fetch("https://news.example.com/p/old", handler)[0] == (
         "https://news.example.com/p/final"
     )
+
+
+def test_a_relative_redirect_is_resolved_against_the_current_hop() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots()
+        if request.url.path == "/p/old":
+            return httpx.Response(
+                302, headers={"Location": "https://news.example.com/p/a/b/middle"}
+            )
+        if request.url.path == "/p/a/b/middle":
+            return httpx.Response(302, headers={"Location": "../up"})
+        return httpx.Response(200, text="<article>the final post</article>")
+
+    assert _fetch("https://news.example.com/p/old", handler)[0] == (
+        "https://news.example.com/p/a/up"
+    )
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/p/old",
+        "https://news.example.com/p/a/b/middle",
+        "https://news.example.com/p/a/up",
+    ]
 
 
 def test_an_allowed_multi_hop_chain_checks_each_hosts_robots() -> None:
