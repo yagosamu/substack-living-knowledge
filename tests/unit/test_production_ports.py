@@ -13,9 +13,11 @@ def test_fetcher_keeps_the_final_url_after_a_redirect() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(str(request.url))
+        assert request.headers["user-agent"] == settings.user_agent
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\n")
         if request.url.path == "/p/old":
             return httpx.Response(302, headers={"Location": "https://www.example.com/p/new"})
-        assert request.headers["user-agent"] == settings.user_agent
         return httpx.Response(200, text="<article>a full post</article>")
 
     async def fetch() -> tuple[str, str]:
@@ -31,6 +33,7 @@ def test_fetcher_keeps_the_final_url_after_a_redirect() -> None:
     url, html = asyncio.run(fetch())
 
     assert seen == [
+        "https://www.example.com/robots.txt",
         "https://www.example.com/p/old",
         "https://www.example.com/p/new",
     ]
