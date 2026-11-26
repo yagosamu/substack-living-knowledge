@@ -56,20 +56,20 @@ def test_vectors_come_back_in_input_order_even_when_the_provider_shuffles_them()
 
 def test_texts_are_sent_in_batches_of_the_configured_size_and_reassembled_in_order() -> None:
     client = FakeClient()
-    texts = ["a", "bb", "ccc", "dddd", "eeeee"]
+    texts = ["a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg"]
 
-    vectors = asyncio.run(embedder(client, batch_size=2).embed(texts))
+    vectors = asyncio.run(embedder(client, batch_size=3).embed(texts))
 
     assert [call["input"] for call in client.embeddings.calls] == [
-        ["a", "bb"],
-        ["ccc", "dddd"],
-        ["eeeee"],
+        ["a", "bb", "ccc"],
+        ["dddd", "eeeee", "ffffff"],
+        ["ggggggg"],
     ]
     assert all(
         call["model"] == "text-embedding-3-small" and call["dimensions"] == 4
         for call in client.embeddings.calls
     )
-    assert vectors == [[float(n)] * 4 for n in range(1, 6)]
+    assert vectors == [[float(n)] * 4 for n in range(1, 8)]
 
 
 def test_an_empty_list_returns_no_vectors_without_calling_the_provider() -> None:

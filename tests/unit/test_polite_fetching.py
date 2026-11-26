@@ -306,6 +306,19 @@ def test_redirects_are_followed_and_the_final_url_is_returned() -> None:
     ]
 
 
+def test_the_final_url_is_taken_from_the_response_not_the_redirect_string() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return _robots()
+        if request.url.path == "/p/old":
+            return httpx.Response(302, headers={"Location": "https://NEWS.example.com/p/final"})
+        return httpx.Response(200, text="<article>the final post</article>")
+
+    assert _fetch("https://news.example.com/p/old", handler)[0] == (
+        "https://news.example.com/p/final"
+    )
+
+
 def test_an_allowed_multi_hop_chain_checks_each_hosts_robots() -> None:
     seen: list[str] = []
 
@@ -396,7 +409,7 @@ def test_a_non_http_redirect_is_never_requested() -> None:
         seen.append(str(request.url))
         if request.url.path == "/robots.txt":
             return _robots()
-        return httpx.Response(302, headers={"Location": "file:///etc/passwd"})
+        return httpx.Response(302, headers={"Location": "ftp://news.example.com/etc/passwd"})
 
     with pytest.raises(PermanentError, match="only http\\(s\\) URLs"):
         _fetch("https://news.example.com/p/open", handler)
