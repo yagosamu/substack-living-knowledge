@@ -14,7 +14,9 @@ _UNSET = object()
 class Settings(BaseSettings):
     """Every tunable value, read from the environment or a local .env file."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", ".dev-stack.env"), env_file_encoding="utf-8", extra="ignore"
+    )
 
     def __init__(self, *, _env_file: object = _UNSET, **values: Any) -> None:
         """Expose pydantic-settings' `_env_file` override to static type checkers."""

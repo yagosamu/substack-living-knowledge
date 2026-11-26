@@ -1,18 +1,24 @@
-COMPOSE = docker compose --project-directory . -f infra/docker-compose.yml
-API_PORT ?= 8000
+STACK = bash infra/dev-stack.sh
 
-.PHONY: start stop reset lint test check
+.PHONY: start stop reset stack-ports stack-env stack-plan lint test check
 
 start:
-	$(COMPOSE) up -d --wait
-	uv run alembic upgrade head
-	uv run uvicorn living_kb.api:app --reload --host 0.0.0.0 --port $(API_PORT)
+	$(STACK) start
 
 stop:
-	$(COMPOSE) down
+	$(STACK) stop
 
 reset:
-	$(COMPOSE) down -v --remove-orphans
+	$(STACK) reset
+
+stack-ports:
+	$(STACK) ports
+
+stack-env:
+	$(STACK) env
+
+stack-plan:
+	$(STACK) plan
 
 lint:
 	uv run ruff check .
@@ -20,6 +26,6 @@ lint:
 	uv run mypy
 
 test:
-	uv run pytest
+	$(STACK) test
 
 check: lint test
