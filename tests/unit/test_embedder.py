@@ -30,10 +30,19 @@ class FakeEmbeddings:
 
     calls: list[dict[str, object]] = field(default_factory=list)
     prompt_tokens_per_item: int = 10_000
+    shared_vectors: list[list[float]] | None = None
 
     async def create(self, *, input: list[str], model: str, dimensions: int) -> Response:
         self.calls.append({"input": list(input), "model": model, "dimensions": dimensions})
-        items = [Item(index=i, embedding=[float(len(t))] * dimensions) for i, t in enumerate(input)]
+        items = [
+            Item(
+                index=i,
+                embedding=self.shared_vectors[i]
+                if self.shared_vectors is not None
+                else [float(len(t))] * dimensions,
+            )
+            for i, t in enumerate(input)
+        ]
         prompt_tokens = self.prompt_tokens_per_item * len(input)
         return Response(data=list(reversed(items)), usage=Usage(prompt_tokens, prompt_tokens + 7))
 
@@ -134,11 +143,14 @@ def test_an_empty_list_returns_no_vectors_and_zero_usage_without_calling_the_pro
 
 def test_returning_plain_lists_keeps_each_result_independent_of_the_provider_response() -> None:
     client = FakeClient()
+    shared = [[1.0] * 4]
+    client.embeddings.shared_vectors = shared
 
     first = asyncio.run(embedder(client).embed(["a"]))
     first["vectors"][0][0] = 99.0
     first["usage"]["input_tokens"] = 1
     second = asyncio.run(embedder(client).embed(["a"]))
 
+    assert shared == [[1.0] * 4]
     assert second["vectors"] == [[1.0] * 4]
     assert second["usage"]["input_tokens"] == 10_000
