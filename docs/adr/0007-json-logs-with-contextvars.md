@@ -1,4 +1,4 @@
-# 0005 — JSON logs correlated through context variables
+# 0007 — JSON logs correlated through context variables
 
 - **Status:** Accepted
 - **Date:** 2026-11-26
