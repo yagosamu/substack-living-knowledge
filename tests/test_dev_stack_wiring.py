@@ -36,6 +36,7 @@ def linked_worktree(tmp_path: Path) -> Iterator[Path]:
         "Makefile",
         "infra/dev-stack.sh",
         "infra/docker-compose.yml",
+        "infra/log-config.json",
         "living_kb/dev_stack.py",
         ".env.example",
     ):
@@ -139,6 +140,7 @@ def test_start_uses_the_derived_project_and_api_port(
     assert "infra/dev-stack.sh start" in commands
     assert f"-p {info['project_name']}" in commands
     assert f"--port {info['ports']['api']}" in commands
+    assert f"--log-config {worktree}/infra/log-config.json" in commands
     assert "-p infra" not in commands
     assert "--port 8000" not in commands
 

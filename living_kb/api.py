@@ -14,6 +14,9 @@ from living_kb.db import get_session
 from living_kb.health import HealthResponse, Probe, build_health
 from living_kb.inngest_app import functions as inngest_functions
 from living_kb.inngest_app import inngest_client
+from living_kb.logging import configure_logging
+
+configure_logging()
 
 app = FastAPI(title="living-kb", version="0.1.0")
 
