@@ -20,9 +20,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     op.execute("DROP INDEX IF EXISTS uq_costs_article_id")
     op.execute("ALTER TABLE costs ADD COLUMN call_id TEXT")
-    op.execute(
-        "CREATE UNIQUE INDEX uq_costs_call_id ON costs (call_id) WHERE call_id IS NOT NULL"
-    )
+    op.execute("CREATE UNIQUE INDEX uq_costs_call_id ON costs (call_id) WHERE call_id IS NOT NULL")
 
 
 def downgrade() -> None:

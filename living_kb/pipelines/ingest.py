@@ -86,8 +86,7 @@ async def _embed_with_call_id(texts: list[str], embed: Embed) -> JournaledEmbedd
     }
 
 
-async def _fetch_article(
-url: str, fetch_html: FetchHtml, fallback: datetime) -> ArticlePayload:
+async def _fetch_article(url: str, fetch_html: FetchHtml, fallback: datetime) -> ArticlePayload:
     page = await fetch_html(url)
     parsed = parse_article(page.html, page.url, fallback_published_at=fallback)
     return {
