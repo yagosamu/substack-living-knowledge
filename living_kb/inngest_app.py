@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from typing import Any, cast
 
 import httpx
@@ -12,12 +14,15 @@ from living_kb.config import settings
 from living_kb.db import SessionFactory
 from living_kb.durable import StepRunner, run_durable
 from living_kb.events import ARTICLE_DISCOVERED
-from living_kb.pipelines.ingest import FetchedPage, IngestPorts, ingest_article
+from living_kb.pipelines.ingest import IngestPorts, ingest_article
 from living_kb.sources.embedder import EmbeddingClient, OpenAIEmbedder
-from living_kb.sources.publications import load_publications
+from living_kb.sources.fetcher import HttpxFetcher as HttpxFetcher
+from living_kb.sources.fetcher import RobotsCache
+from living_kb.sources.publications import Publication, load_publications
 
 logger = logging.getLogger("living_kb.inngest")
 publications = load_publications(settings.publications_registry_path)
+_robots_cache = RobotsCache()
 
 inngest_client = inngest.Inngest(
     app_id=settings.inngest_app_id,
@@ -30,16 +35,25 @@ inngest_client = inngest.Inngest(
 )
 
 
-class HttpxFetcher:
-    """Fetch one article page and keep the URL the publisher finally served."""
-
-    def __init__(self, client: httpx.AsyncClient) -> None:
-        self._client = client
-
-    async def __call__(self, url: str) -> FetchedPage:
-        response = await self._client.get(url)
-        response.raise_for_status()
-        return FetchedPage(url=str(response.url), html=response.text)
+@asynccontextmanager
+async def article_fetcher(
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    robots_cache: RobotsCache | None = None,
+    allowed_publications: Sequence[Publication] | None = None,
+) -> AsyncIterator[HttpxFetcher]:
+    """Build the production fetcher: one polite client, shared robots cache."""
+    async with httpx.AsyncClient(
+        headers={"User-Agent": settings.user_agent},
+        timeout=settings.request_timeout_seconds,
+        follow_redirects=False,
+        transport=transport,
+    ) as client:
+        yield HttpxFetcher(
+            client,
+            publications=publications if allowed_publications is None else allowed_publications,
+            robots_cache=robots_cache or _robots_cache,
+        )
 
 
 class LazyEmbedder:
@@ -95,7 +109,9 @@ async def demo_durable(ctx: inngest.Context) -> dict[str, str]:
     )
 
 
-async def handle_ingest_article(ctx: inngest.Context) -> dict[str, int]:
+async def handle_ingest_article(
+    ctx: inngest.Context, *, transport: httpx.AsyncBaseTransport | None = None
+) -> dict[str, int]:
     """Wire the production ports and run the six durable steps for one article."""
 
     async def pipeline(runner: StepRunner) -> dict[str, int]:
@@ -103,13 +119,11 @@ async def handle_ingest_article(ctx: inngest.Context) -> dict[str, int]:
             "ingest-article started", extra={"canonical_id": ctx.event.data.get("canonical_id")}
         )
         try:
-            async with httpx.AsyncClient(
-                headers={"User-Agent": settings.user_agent},
-                timeout=settings.request_timeout_seconds,
-                follow_redirects=True,
-            ) as client:
+            async with article_fetcher(
+                transport=transport, allowed_publications=publications
+            ) as fetcher:
                 ports = IngestPorts(
-                    fetch_html=HttpxFetcher(client),
+                    fetch_html=fetcher,
                     embed=LazyEmbedder(),
                     send_event=InngestEventSender(),
                     session_factory=SessionFactory,

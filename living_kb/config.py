@@ -36,6 +36,7 @@ class Settings(BaseSettings):
 
     discovery_limit: int = 5
     request_timeout_seconds: int = 15
+    max_redirects: int = 5
     max_article_bytes: int = 5_242_880
     min_article_chars: int = 100
     user_agent: str = "living-kb/0.1 (+https://github.com/yagosamu/substack-living-knowledge)"
