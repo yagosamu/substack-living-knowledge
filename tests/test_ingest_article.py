@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from living_kb.durable import InjectedFailure, JournalRunner, PermanentError, StepRunner
 from living_kb.pipelines.ingest import FetchedPage, IngestPorts, ingest_article
+from living_kb.sources.embedder import EmbeddedTexts
 from living_kb.sources.publications import Publication
 
 SessionFactory = async_sessionmaker[AsyncSession]
@@ -47,9 +48,16 @@ class FakeEmbedder:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def __call__(self, texts: list[str]) -> list[list[float]]:
+    async def __call__(self, texts: list[str]) -> EmbeddedTexts:
         self.calls += 1
-        return [[round(0.001 * (i + 1), 6)] * 1536 for i in range(len(texts))]
+        return {
+            "vectors": [[round(0.001 * (i + 1), 6)] * 1536 for i in range(len(texts))],
+            "usage": {
+                "model": "test-embed-v1",
+                "input_tokens": 100 * len(texts),
+                "estimated_usd": 0.0,
+            },
+        }
 
 
 class RecordingSender:

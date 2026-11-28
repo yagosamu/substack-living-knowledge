@@ -16,7 +16,7 @@ from living_kb.db import SessionFactory
 from living_kb.durable import InngestRunner, StepRunner, run_durable
 from living_kb.events import ARTICLE_DISCOVERED
 from living_kb.pipelines.ingest import IngestPorts, ingest_article
-from living_kb.sources.embedder import EmbeddingClient, OpenAIEmbedder
+from living_kb.sources.embedder import EmbeddedTexts, EmbeddingClient, OpenAIEmbedder
 from living_kb.sources.fetcher import HttpxFetcher as HttpxFetcher
 from living_kb.sources.fetcher import RobotsCache
 from living_kb.sources.publications import Publication, load_publications
@@ -79,10 +79,11 @@ class LazyEmbedder:
                 model=settings.embedding_model,
                 dimensions=settings.embedding_dimensions,
                 batch_size=settings.embedding_batch_size,
+                price_per_million_tokens=settings.embedding_price_per_million_tokens,
             )
         return self._inner
 
-    async def __call__(self, texts: list[str]) -> list[list[float]]:
+    async def __call__(self, texts: list[str]) -> EmbeddedTexts:
         return await self._get().embed(texts)
 
 

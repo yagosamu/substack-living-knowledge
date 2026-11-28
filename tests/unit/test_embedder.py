@@ -25,14 +25,26 @@ class Response:
 @dataclass
 class FakeEmbeddings:
     """Mimics `client.embeddings.create`, returning items in reverse order like a provider
-    that does not guarantee ordering. Each vector encodes its text, so order is checkable."""
+    that does not guarantee ordering. Each vector encodes its text, so order is checkable.
+    Prompt and total tokens differ, so a usage field mix-up is checkable."""
 
     calls: list[dict[str, object]] = field(default_factory=list)
+    prompt_tokens_per_item: int = 10_000
+    shared_vectors: list[list[float]] | None = None
 
     async def create(self, *, input: list[str], model: str, dimensions: int) -> Response:
         self.calls.append({"input": list(input), "model": model, "dimensions": dimensions})
-        items = [Item(index=i, embedding=[float(len(t))] * dimensions) for i, t in enumerate(input)]
-        return Response(data=list(reversed(items)), usage=Usage(len(input), len(input)))
+        items = [
+            Item(
+                index=i,
+                embedding=self.shared_vectors[i]
+                if self.shared_vectors is not None
+                else [float(len(t))] * dimensions,
+            )
+            for i, t in enumerate(input)
+        ]
+        prompt_tokens = self.prompt_tokens_per_item * len(input)
+        return Response(data=list(reversed(items)), usage=Usage(prompt_tokens, prompt_tokens + 7))
 
 
 @dataclass
@@ -40,25 +52,31 @@ class FakeClient:
     embeddings: FakeEmbeddings = field(default_factory=FakeEmbeddings)
 
 
-def embedder(client: FakeClient, batch_size: int = 96) -> OpenAIEmbedder:
+def embedder(
+    client: FakeClient,
+    batch_size: int = 96,
+    *,
+    model: str = "text-embedding-3-small",
+    price: float = 0.02,
+) -> OpenAIEmbedder:
     return OpenAIEmbedder(
-        client, model="text-embedding-3-small", dimensions=4, batch_size=batch_size
+        client, model=model, dimensions=4, batch_size=batch_size, price_per_million_tokens=price
     )
 
 
 def test_vectors_come_back_in_input_order_even_when_the_provider_shuffles_them() -> None:
     texts = ["a", "bb", "ccc"]
 
-    vectors = asyncio.run(embedder(FakeClient()).embed(texts))
+    result = asyncio.run(embedder(FakeClient()).embed(texts))
 
-    assert vectors == [[1.0] * 4, [2.0] * 4, [3.0] * 4]
+    assert result["vectors"] == [[1.0] * 4, [2.0] * 4, [3.0] * 4]
 
 
 def test_texts_are_sent_in_batches_of_the_configured_size_and_reassembled_in_order() -> None:
     client = FakeClient()
     texts = ["a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg"]
 
-    vectors = asyncio.run(embedder(client, batch_size=3).embed(texts))
+    result = asyncio.run(embedder(client, batch_size=3).embed(texts))
 
     assert [call["input"] for call in client.embeddings.calls] == [
         ["a", "bb", "ccc"],
@@ -69,11 +87,71 @@ def test_texts_are_sent_in_batches_of_the_configured_size_and_reassembled_in_ord
         call["model"] == "text-embedding-3-small" and call["dimensions"] == 4
         for call in client.embeddings.calls
     )
-    assert vectors == [[float(n)] * 4 for n in range(1, 8)]
+    assert result["vectors"] == [[float(n)] * 4 for n in range(1, 8)]
 
 
-def test_an_empty_list_returns_no_vectors_without_calling_the_provider() -> None:
+def test_usage_reports_the_requested_model_prompt_tokens_and_usd() -> None:
     client = FakeClient()
 
-    assert asyncio.run(embedder(client).embed([])) == []
+    result = asyncio.run(
+        embedder(client, model="embedding-model-from-settings-v9", price=0.03).embed(["a", "bb"])
+    )
+
+    assert result["usage"] == {
+        "model": "embedding-model-from-settings-v9",
+        "input_tokens": 20_000,
+        "estimated_usd": round(20_000 / 1_000_000 * 0.03, 6),
+    }
+    assert result["usage"]["estimated_usd"] == 0.0006
+    assert "total" not in result["usage"]
+
+
+def test_usage_sums_prompt_tokens_from_every_batch_including_the_last_partial_one() -> None:
+    client = FakeClient()
+
+    result = asyncio.run(embedder(client, batch_size=2).embed(["a", "bb", "ccc", "dddd", "eeeee"]))
+
+    assert result["usage"]["input_tokens"] == 50_000
+    assert result["usage"]["estimated_usd"] == 0.001
+
+
+def test_estimated_usd_rounds_to_six_decimals_not_five_or_truncation() -> None:
+    client = FakeClient()
+    client.embeddings = FakeEmbeddings(prompt_tokens_per_item=1_234_567)
+    raw = 1_234_567 / 1_000_000 * 0.13
+
+    result = asyncio.run(embedder(client, price=0.13).embed(["a"]))
+
+    assert round(raw, 6) == 0.160494
+    assert round(raw, 5) != round(raw, 6)
+    assert int(raw * 1_000_000) / 1_000_000 != round(raw, 6)
+    assert result["usage"]["estimated_usd"] == 0.160494
+
+
+def test_an_empty_list_returns_no_vectors_and_zero_usage_without_calling_the_provider() -> None:
+    client = FakeClient()
+
+    result = asyncio.run(embedder(client).embed([]))
+
+    assert result["vectors"] == []
+    assert result["usage"] == {
+        "model": "text-embedding-3-small",
+        "input_tokens": 0,
+        "estimated_usd": 0.0,
+    }
     assert client.embeddings.calls == []
+
+
+def test_returning_plain_lists_keeps_each_result_independent_of_the_provider_response() -> None:
+    client = FakeClient()
+    shared = [[1.0] * 4]
+    client.embeddings.shared_vectors = shared
+
+    first = asyncio.run(embedder(client).embed(["a"]))
+    first["vectors"][0][0] = 99.0
+    first["usage"]["input_tokens"] = 1
+    second = asyncio.run(embedder(client).embed(["a"]))
+
+    assert shared == [[1.0] * 4]
+    assert second["vectors"] == [[1.0] * 4]
+    assert second["usage"]["input_tokens"] == 10_000
