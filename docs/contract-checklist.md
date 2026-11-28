@@ -39,6 +39,16 @@ Pick inputs where the right and the wrong implementation give different answers.
 - **Assert the whole command, not a substring that also matches the wrong one.** *(#31: the `make stop` assertion also matched `down -v`, which would delete the volume.)*
 - **Example and default files are inputs too.** A documented `cp .env.example .env` must not silently override derived behaviour. Test with a fresh copy of every example file the docs tell people to use. *(#31: `.env.example` pinned the main-checkout ports in every worktree.)*
 
+## 4c. Every boundary with the outside world is an attack surface
+
+- **Each redirect hop is a new request.** Every rule that applies to the requested URL (allowlist, robots.txt, scheme, size, timeout) applies to every hop, and robots.txt's own redirects are hops too. Follow redirects by hand and check each hop before requesting it. *(#7: an allowlisted article could redirect to `169.254.169.254`. That is SSRF.)*
+- **A regex built from external text is attacker-controlled CPU.** Robots rules, user patterns and feed fields come from strangers. A naive wildcard-to-regex translation backtracks exponentially. Add a timed regression test with pathological input. *(#7: 30 `*` on a 3000-char path never finished, and it blocked the event loop.)*
+- **Prefer a vetted library for standardized formats** (robots.txt, URLs, feeds, dates). Hand-rolling a parser for a format with an RFC means rediscovering years of edge cases one review round at a time. *(#7 took five rounds; switching to Protego closed the ReDoS and the matcher gaps together.)*
+
+## 4d. Requirements state their purpose
+
+- **A rule without its purpose can be followed into the wrong answer.** Write why the behaviour exists, not only what it is, so an implementer can tell which reading is right. *(#8: "re-running after success writes no cost row" was followed faithfully, and the cost table then under-reported real spend, with 3 paid calls and 1 row. The purpose, "the table tells the truth about spend", would have ruled that reading out.)*
+
 ## 5. Seed mutants from this list, not from imagination
 
 For every pipeline, plant at least these mutants, in addition to your own:
@@ -54,7 +64,9 @@ For every pipeline, plant at least these mutants, in addition to your own:
 
 Then let the reviewer plant theirs. The reviewer's survivors, not yours, decide whether the contract is done.
 
-## 6. Distrust the answer key
+## 6. Distrust the answer key, and the implementer's own mutant table
+
+An implementer's self-reported mutant table is a starting point for the reviewer, never evidence. In the #7/#8/#11 fan-out, every PR claimed zero survivors, and the reviewers found 8, 4 and 9.
 
 The throwaway implementation that proves a contract reachable shares its author's blind spots. In this project it had the same bug as the implementer more than once: a truncated feed accepted (#4), a live journal object returned (#5), the full HTML journaled (#6). A passing answer key proves the tests are reachable, never that they are strong.
 
@@ -65,5 +77,7 @@ The throwaway implementation that proves a contract reachable shares its author'
 - [ ] Zero, empty, limits and each failure class have a test (section 3).
 - [ ] Engine behaviour was checked against the real SDK, and every fake behaviour has a production-path test (section 4).
 - [ ] Make/Compose/shell wiring and every documented example file are exercised by a test (section 4b).
+- [ ] Every external boundary (redirects, regexes from external text, parsers of standard formats) is checked per hop and against pathological input, or delegated to a vetted library (section 4c).
+- [ ] Every acceptance criterion states its purpose (section 4d).
 - [ ] Every mutant in section 5 was planted and killed.
 - [ ] Every ADR rule the task touches has an enforcing test (section 4).
