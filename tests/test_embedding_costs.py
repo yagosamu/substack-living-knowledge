@@ -280,6 +280,7 @@ def test_a_persist_that_dies_after_commit_keeps_one_cost_row(
     asyncio.run(runner.execute(pipeline(ports, publication_id)))
 
     after = asyncio.run(rows(session_factory, COST_QUERY))
+    assert after == first
     assert len(after) == 1
     assert after[0].call_id == first[0].call_id
     assert embedder.calls == 1
