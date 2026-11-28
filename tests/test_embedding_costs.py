@@ -138,6 +138,13 @@ def pipeline(
 
 async def seed_publication(session_factory: SessionFactory) -> int:
     async with session_factory() as session:
+        await session.execute(
+            text(
+                "INSERT INTO publications (slug, name, feed_url, homepage) "
+                "VALUES ('other-example', 'Other Example', 'https://other.example.test/feed', "
+                "'https://other.example.test')"
+            )
+        )
         publication_id = await session.scalar(
             text(
                 "INSERT INTO publications (slug, name, feed_url, homepage) "
@@ -164,7 +171,8 @@ async def counts(session_factory: SessionFactory) -> tuple[int, int, int]:
     return int(row[0]), int(row[1]), int(row[2])
 
 
-COST_COLUMNS = "article_id, model, input_tokens, output_tokens, estimated_usd"
+COST_COLUMNS = "call_id, article_id, model, input_tokens, output_tokens, estimated_usd"
+COST_QUERY = f"SELECT {COST_COLUMNS} FROM costs ORDER BY id"
 
 
 @pytest.fixture
@@ -173,7 +181,7 @@ def publication_id(session_factory: SessionFactory, clean_db: None) -> int:
 
 
 @pytest.mark.integration
-def test_fake_embedder_usage_is_saved_as_one_cost_row_linked_to_the_article(
+def test_fake_embedder_usage_is_saved_as_a_cost_row_linked_to_the_article(
     session_factory: SessionFactory, publication_id: int
 ) -> None:
     embedder = FakeEmbedder()
@@ -184,10 +192,11 @@ def test_fake_embedder_usage_is_saved_as_one_cost_row_linked_to_the_article(
         )
     )
 
-    cost_rows = asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs"))
+    cost_rows = asyncio.run(rows(session_factory, COST_QUERY))
     assert len(cost_rows) == 1
     (cost,) = cost_rows
-    assert cost.article_id == result["article_id"]
+    assert cost.call_id
+    assert cost.article_id == result["article_id"] != publication_id
     assert cost.model == MODEL != settings.embedding_model
     assert cost.input_tokens == TOKENS
     assert cost.output_tokens == 0
@@ -199,7 +208,7 @@ def test_fake_embedder_usage_is_saved_as_one_cost_row_linked_to_the_article(
 
 
 @pytest.mark.integration
-def test_a_fresh_redelivery_keeps_exactly_one_cost_row(
+def test_two_paid_redeliveries_write_two_cost_rows_with_summed_tokens(
     session_factory: SessionFactory, publication_id: int
 ) -> None:
     first = FakeEmbedder()
@@ -208,7 +217,7 @@ def test_a_fresh_redelivery_keeps_exactly_one_cost_row(
             pipeline(make_ports(session_factory, publication_id, first), publication_id)
         )
     )
-    before = asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs"))
+    before = asyncio.run(rows(session_factory, COST_QUERY))
 
     changed = FakeEmbedder(model="a-later-run-model", input_tokens=1, price=0.02)
     asyncio.run(
@@ -217,11 +226,17 @@ def test_a_fresh_redelivery_keeps_exactly_one_cost_row(
         )
     )
 
-    after = asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs"))
-    assert len(before) == len(after) == 1
-    assert after == before
+    after = asyncio.run(rows(session_factory, COST_QUERY))
+    assert len(before) == 1
+    assert len(after) == 2
+    assert after[0] == before[0]
+    assert after[1].call_id != after[0].call_id
+    assert after[1].article_id == after[0].article_id
+    assert after[1].model == "a-later-run-model"
+    assert sum(int(row.input_tokens) for row in after) == TOKENS + 1
+    assert [int(row.input_tokens) for row in after] == [TOKENS, 1]
     assert asyncio.run(counts(session_factory))[0] == 1
-    assert changed.calls == 1
+    assert first.calls == changed.calls == 1
 
 
 @pytest.mark.integration
@@ -237,7 +252,7 @@ def test_a_replay_after_a_successful_run_does_not_touch_the_cost_row(
     runner = JournalRunner()
 
     asyncio.run(runner.execute(pipeline(ports, publication_id)))
-    before = asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs"))
+    before = asyncio.run(rows(session_factory, COST_QUERY))
     runner.fail_next("emit", after_side_effect=True)
 
     with pytest.raises(InjectedFailure):
@@ -245,7 +260,29 @@ def test_a_replay_after_a_successful_run_does_not_touch_the_cost_row(
 
     assert counting.opened == 1
     assert embedder.calls == 1
-    assert asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs")) == before
+    assert asyncio.run(rows(session_factory, COST_QUERY)) == before
+
+
+@pytest.mark.integration
+def test_a_persist_that_dies_after_commit_keeps_one_cost_row(
+    session_factory: SessionFactory, publication_id: int
+) -> None:
+    runner = JournalRunner()
+    embedder = FakeEmbedder()
+    ports = make_ports(session_factory, publication_id, embedder)
+    runner.fail_next("persist", after_side_effect=True)
+
+    with pytest.raises(InjectedFailure):
+        asyncio.run(runner.execute(pipeline(ports, publication_id)))
+
+    first = asyncio.run(rows(session_factory, COST_QUERY))
+    assert len(first) == 1
+    asyncio.run(runner.execute(pipeline(ports, publication_id)))
+
+    after = asyncio.run(rows(session_factory, COST_QUERY))
+    assert len(after) == 1
+    assert after[0].call_id == first[0].call_id
+    assert embedder.calls == 1
 
 
 @pytest.mark.integration
@@ -270,8 +307,9 @@ def test_usage_travels_through_the_journaled_embed_step(
         )
     )
 
-    (cost,) = asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs"))
+    (cost,) = asyncio.run(rows(session_factory, COST_QUERY))
     assert changed.calls == 0
+    assert cost.call_id
     assert cost.model == "usage-in-the-journal"
     assert cost.input_tokens == 111
     assert float(cost.estimated_usd) == round(111 / 1_000_000 * PRICE, 6)
@@ -290,7 +328,7 @@ def test_mutating_a_journaled_usage_result_cannot_change_a_replay(
         asyncio.run(runner.execute(pipeline(ports, publication_id)))
     asyncio.run(runner.execute(pipeline(ports, publication_id)))
 
-    (cost,) = asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs"))
+    (cost,) = asyncio.run(rows(session_factory, COST_QUERY))
     assert cost.input_tokens == TOKENS != 777
 
 
@@ -318,7 +356,7 @@ def test_zero_token_usage_records_a_zero_cost_row(
 
     asyncio.run(JournalRunner().execute(pipeline(ports, publication_id)))
 
-    (cost,) = asyncio.run(rows(session_factory, f"SELECT {COST_COLUMNS} FROM costs"))
+    (cost,) = asyncio.run(rows(session_factory, COST_QUERY))
     assert cost.input_tokens == 0
     assert float(cost.estimated_usd) == 0.0
     assert cost.model == MODEL

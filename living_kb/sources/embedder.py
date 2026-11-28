@@ -19,6 +19,12 @@ class EmbeddedTexts(TypedDict):
     usage: EmbeddingUsage
 
 
+class JournaledEmbedding(TypedDict):
+    vectors: list[list[float]]
+    usage: EmbeddingUsage
+    call_id: str
+
+
 class EmbeddingTokenUsage(Protocol):
     @property
     def prompt_tokens(self) -> int: ...

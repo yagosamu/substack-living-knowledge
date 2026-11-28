@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, TypedDict, cast
+from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import text
@@ -21,7 +22,7 @@ from living_kb.events import (
     ArticleIngested,
 )
 from living_kb.sources.chunking import chunk_text
-from living_kb.sources.embedder import EmbeddedTexts
+from living_kb.sources.embedder import EmbeddedTexts, JournaledEmbedding
 from living_kb.sources.parser import parse_article
 from living_kb.sources.publications import NotAllowedError, Publication, assert_allowed
 
@@ -76,7 +77,17 @@ def _check_allowlist(event: ArticleDiscovered, publications: Sequence[Publicatio
     return publication.slug
 
 
-async def _fetch_article(url: str, fetch_html: FetchHtml, fallback: datetime) -> ArticlePayload:
+async def _embed_with_call_id(texts: list[str], embed: Embed) -> JournaledEmbedding:
+    embedded = await embed(texts)
+    return {
+        "vectors": embedded["vectors"],
+        "usage": embedded["usage"],
+        "call_id": uuid4().hex,
+    }
+
+
+async def _fetch_article(
+url: str, fetch_html: FetchHtml, fallback: datetime) -> ArticlePayload:
     page = await fetch_html(url)
     parsed = parse_article(page.html, page.url, fallback_published_at=fallback)
     return {
@@ -94,7 +105,7 @@ async def _persist(
     event: ArticleDiscovered,
     parsed: ArticlePayload,
     chunks: list[str],
-    embedded: EmbeddedTexts,
+    embedded: JournaledEmbedding,
 ) -> PersistPayload:
     vectors = embedded["vectors"]
     usage = embedded["usage"]
@@ -165,14 +176,15 @@ async def _persist(
             text(
                 """
                 INSERT INTO costs (
-                    article_id, model, input_tokens, output_tokens, estimated_usd
+                    call_id, article_id, model, input_tokens, output_tokens, estimated_usd
                 ) VALUES (
-                    :article_id, :model, :input_tokens, 0, :estimated_usd
+                    :call_id, :article_id, :model, :input_tokens, 0, :estimated_usd
                 )
-                ON CONFLICT (article_id) WHERE article_id IS NOT NULL DO NOTHING
+                ON CONFLICT (call_id) WHERE call_id IS NOT NULL DO NOTHING
                 """
             ),
             {
+                "call_id": embedded["call_id"],
                 "article_id": article_pk,
                 "model": usage["model"],
                 "input_tokens": usage["input_tokens"],
@@ -219,7 +231,7 @@ async def ingest_article(
         "chunk",
         lambda: chunk_text(parsed["text"], settings.chunk_size, settings.chunk_overlap),
     )
-    embedded = await runner.run("embed", lambda: ports.embed(chunks))
+    embedded = await runner.run("embed", lambda: _embed_with_call_id(chunks, ports.embed))
     persisted = await runner.run(
         "persist",
         lambda: _persist(ports.session_factory, discovered, parsed, chunks, embedded),

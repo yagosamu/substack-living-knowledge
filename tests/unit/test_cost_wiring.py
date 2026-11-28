@@ -47,22 +47,25 @@ def test_lazy_embedder_reports_usage_priced_with_the_configured_price(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configured_price = 0.07
+    configured_model = "text-embedding-3-large-v2"
     monkeypatch.setattr(settings, "embedding_price_per_million_tokens", configured_price)
+    monkeypatch.setattr(settings, "embedding_model", configured_model)
     client = FakeClient()
     monkeypatch.setattr(openai, "AsyncOpenAI", lambda **_: cast("Any", client))
 
     result = asyncio.run(LazyEmbedder()(["a", "bb"]))
 
     assert result["usage"] == {
-        "model": settings.embedding_model,
+        "model": configured_model,
         "input_tokens": 20_000,
         "estimated_usd": round(20_000 / 1_000_000 * configured_price, 6),
     }
+    assert configured_model != "text-embedding-3-small"
     assert result["usage"]["estimated_usd"] != round(20_000 / 1_000_000 * 0.02, 6)
     assert client.embeddings.calls == [
         {
             "input": ["a", "bb"],
-            "model": settings.embedding_model,
+            "model": configured_model,
             "dimensions": settings.embedding_dimensions,
         }
     ]

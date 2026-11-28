@@ -115,16 +115,17 @@ def test_usage_sums_prompt_tokens_from_every_batch_including_the_last_partial_on
     assert result["usage"]["estimated_usd"] == 0.001
 
 
-def test_estimated_usd_uses_the_given_price_and_is_rounded_to_six_decimals() -> None:
+def test_estimated_usd_rounds_to_six_decimals_not_five_or_truncation() -> None:
     client = FakeClient()
-    embeddings = FakeEmbeddings(prompt_tokens_per_item=12_345)
-    client.embeddings = embeddings
-    raw = 12_345 / 1_000_000 * 0.03
+    client.embeddings = FakeEmbeddings(prompt_tokens_per_item=1_234_567)
+    raw = 1_234_567 / 1_000_000 * 0.13
 
-    result = asyncio.run(embedder(client, price=0.03).embed(["a"]))
+    result = asyncio.run(embedder(client, price=0.13).embed(["a"]))
 
-    assert raw != round(raw, 6)
-    assert result["usage"]["estimated_usd"] == round(raw, 6)
+    assert round(raw, 6) == 0.160494
+    assert round(raw, 5) != round(raw, 6)
+    assert int(raw * 1_000_000) / 1_000_000 != round(raw, 6)
+    assert result["usage"]["estimated_usd"] == 0.160494
 
 
 def test_an_empty_list_returns_no_vectors_and_zero_usage_without_calling_the_provider() -> None:
