@@ -171,7 +171,9 @@ async def counts(session_factory: SessionFactory) -> tuple[int, int, int]:
     return int(row[0]), int(row[1]), int(row[2])
 
 
-COST_COLUMNS = "call_id, article_id, model, input_tokens, output_tokens, estimated_usd"
+COST_COLUMNS = (
+    "id, call_id, article_id, model, input_tokens, output_tokens, estimated_usd, created_at"
+)
 COST_QUERY = f"SELECT {COST_COLUMNS} FROM costs ORDER BY id"
 
 
