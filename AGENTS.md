@@ -28,4 +28,4 @@ Follow [`docs/review.md`](docs/review.md).
   - Integration tests (`@pytest.mark.integration`) run against the real Postgres/pgvector from `infra/docker-compose.yml` locally, and against the service container in CI.
   - OpenAI and Anthropic are always faked in tests, using recorded responses or stub clients. A test run costs zero API spend.
 - **Secrets** live only in `.env`, which git ignores. `.env.example` lists every variable with a safe placeholder.
-- **Decisions:** a choice that a future reader would ask "why?" about gets an ADR in `docs/adr/NNNN-<slug>.md` (Context, Decision, Consequences).
+- **Decisions:** a choice that a future reader would ask "why?" about gets an ADR in `docs/adr/NNNN-<slug>.md` (Context, Decision, Consequences). Use the ADR number your task spec assigns. If it assigns none, take the next number free on `main` **and** among open PRs (`gh pr list --state open`, then each PR's `docs/adr/` files). Parallel workers otherwise pick the same number.
