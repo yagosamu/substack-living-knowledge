@@ -277,6 +277,42 @@ def test_an_article_outside_the_allowlist_fails_permanently_without_being_fetche
     assert asyncio.run(_counts(session_factory)) == (0, 0)
 
 
+class FailingPassageSessionFactory:
+    """Commit the article insert, then fail on the first passage insert."""
+
+    def __init__(self, inner: SessionFactory) -> None:
+        self.inner = inner
+
+    def __call__(self) -> AsyncSession:
+        session = self.inner()
+        original = session.execute
+
+        async def execute(statement: Any, params: Any = None) -> Any:
+            if "INSERT INTO passages" in str(statement):
+                raise RuntimeError("passage write failed")
+            return await original(statement, params)
+
+        session.execute = execute  # type: ignore[assignment]
+        return session
+
+
+@pytest.mark.integration
+def test_a_failure_while_writing_passages_leaves_no_article(
+    harness: Harness, session_factory: SessionFactory
+) -> None:
+    ports = dataclasses.replace(
+        harness.ports,
+        session_factory=FailingPassageSessionFactory(session_factory),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(RuntimeError, match="passage write failed"):
+        asyncio.run(
+            JournalRunner().execute(lambda runner: ingest_article(runner, harness.event(), ports))
+        )
+
+    assert asyncio.run(_counts(session_factory)) == (0, 0)
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "broken",

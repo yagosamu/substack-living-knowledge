@@ -19,6 +19,7 @@ def test_spec_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     assert config.embedding_price_per_million_tokens == 0.02
     assert config.discovery_limit == 5
     assert config.request_timeout_seconds == 15
+    assert config.max_redirects == 5
     assert config.max_article_bytes == 5_242_880
     assert config.user_agent.startswith("living-kb/")
     assert config.ingest_concurrency == 3
