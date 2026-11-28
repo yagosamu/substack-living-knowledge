@@ -65,6 +65,7 @@ def test_initial_schema(session_factory: async_sessionmaker[AsyncSession]) -> No
             }
             assert await column_names(session, "costs") == {
                 "id",
+                "call_id",
                 "article_id",
                 "model",
                 "input_tokens",
@@ -130,6 +131,8 @@ def test_initial_schema(session_factory: async_sessionmaker[AsyncSession]) -> No
                 for definition in indexes.values()
             )
             assert "uq_passages_article_chunk" in indexes
+            assert "uq_costs_call_id" in indexes
+            assert "uq_costs_article_id" not in indexes
 
             unique_definition = cast(
                 str | None,
