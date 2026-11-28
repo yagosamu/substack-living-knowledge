@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from urllib.parse import unquote, urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
+from urllib.parse import urljoin, urlsplit
 
 import httpx
+from protego import Protego
 
 from living_kb.config import settings
 from living_kb.durable import PermanentError
@@ -23,123 +22,17 @@ _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 class RobotsCache:
     """Parsed robots rules already learned for each host."""
 
-    _parsers: dict[str, RobotFileParser] = field(default_factory=dict)
+    _parsers: dict[str, Protego] = field(default_factory=dict)
 
-    def get(self, host: str) -> RobotFileParser | None:
+    def get(self, host: str) -> Protego | None:
         return self._parsers.get(host)
 
-    def set(self, host: str, parser: RobotFileParser) -> None:
+    def set(self, host: str, parser: Protego) -> None:
         self._parsers[host] = parser
 
 
-def _agent_product(agent: str) -> str:
-    return agent.split("/", 1)[0].strip().lower()
-
-
-def _matches_agent(declared: str, product: str) -> bool:
-    name = declared.strip().lower()
-    return name == "*" or name == product or product.startswith(name)
-
-
-def _empty_robots() -> RobotFileParser:
-    parser = RobotFileParser()
-    parser.parse([])
-    return parser
-
-
-def _compile_rule(path: str) -> re.Pattern[str]:
-    parts: list[str] = []
-    for index, char in enumerate(path):
-        if char == "*":
-            parts.append(".*")
-        elif char == "$" and index == len(path) - 1:
-            parts.append("$")
-        else:
-            parts.append(re.escape(char))
-    return re.compile("^" + "".join(parts))
-
-
-class _RobotsParser(RobotFileParser):
-    """RobotFileParser with RFC 9309 wildcards and longest-match rules."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._rules: list[tuple[int, bool, re.Pattern[str]]] = []
-
-    def add_rule(self, allowance: bool, path: str) -> None:
-        if not path:
-            return
-        self._rules.append((len(path), allowance, _compile_rule(path)))
-
-    def can_fetch(self, useragent: str, url: str) -> bool:
-        parts = urlsplit(url)
-        target = unquote(parts.path or "/")
-        if parts.query:
-            target = f"{target}?{parts.query}"
-        matches = [
-            (length, allowance)
-            for length, allowance, pattern in self._rules
-            if pattern.match(target)
-        ]
-        if not matches:
-            return True
-        _, allowance = max(matches, key=lambda match: (match[0], match[1]))
-        return allowance
-
-
-def parse_robots(text: str, *, user_agent: str) -> RobotFileParser:
-    """Return rules from our agent's group, falling back to the wildcard group.
-
-    Groups are selected before matching so a specific agent wins even when
-    ``*`` is listed first. ``urllib.robotparser`` does not support wildcards on
-    Python 3.12, so ``*`` and a trailing ``$`` are compiled here. Rules follow
-    RFC 9309 longest match, with ``Allow`` winning a tie; empty rules are ignored.
-    """
-    groups: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-    agents: list[str] = []
-    rules: list[str] = []
-
-    def flush() -> None:
-        if agents:
-            groups.append((tuple(agents), tuple(rules)))
-
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line or ":" not in line:
-            continue
-        name, value = (part.strip() for part in line.split(":", 1))
-        name = name.lower()
-        if name == "user-agent":
-            if agents:
-                flush()
-                agents = []
-                rules = []
-            agents.append(value)
-        elif name in ("allow", "disallow") and agents:
-            rules.append(f"{name.capitalize()}: {value}")
-    flush()
-
-    product = _agent_product(user_agent)
-    specific = [
-        rules_for_group
-        for group_agents, rules_for_group in groups
-        if any(
-            _matches_agent(declared, product) and declared.strip().lower() != "*"
-            for declared in group_agents
-        )
-    ]
-    wildcard = [
-        rules_for_group
-        for group_agents, rules_for_group in groups
-        if any(declared.strip().lower() == "*" for declared in group_agents)
-    ]
-    selected = specific or wildcard
-    parser = _RobotsParser()
-    for rules_for_group in selected:
-        for rule in rules_for_group:
-            name, _, value = rule.partition(":")
-            parser.add_rule(name.strip().lower() == "allow", value.strip())
-    return parser
+def _empty_robots() -> Protego:
+    return Protego.parse("")
 
 
 def _robots_url(url: str) -> str:
@@ -159,13 +52,13 @@ def _check_status(response: httpx.Response, url: str) -> None:
     raise PermanentError(f"{url} returned HTTP {status}")
 
 
-def _robots_from_response(response: httpx.Response, url: str) -> RobotFileParser:
+def _robots_from_response(response: httpx.Response, url: str) -> Protego:
     status = response.status_code
     if status in _RETRIABLE_CLIENT_ERRORS or status >= 500:
         response.raise_for_status()
     if status >= 400:
         return _empty_robots()
-    return parse_robots(response.text, user_agent=settings.user_agent)
+    return Protego.parse(response.text)
 
 
 class HttpxFetcher:
@@ -191,7 +84,7 @@ class HttpxFetcher:
         except (NotAllowedError, ValueError) as exc:
             raise PermanentError(str(exc)) from exc
 
-    async def _robots(self, url: str) -> RobotFileParser:
+    async def _robots(self, url: str) -> Protego:
         host = urlsplit(url).hostname
         if not host:
             raise ValueError(f"URL has no host: {url!r}")
@@ -220,7 +113,7 @@ class HttpxFetcher:
 
     async def _is_allowed_by_robots(self, url: str) -> bool:
         parser = await self._robots(url)
-        return parser.can_fetch(settings.user_agent, url)
+        return parser.can_fetch(url, settings.user_agent)
 
     async def __call__(self, url: str) -> FetchedPage:
         current = url

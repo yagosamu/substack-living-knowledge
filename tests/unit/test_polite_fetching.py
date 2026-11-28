@@ -1,4 +1,5 @@
 import asyncio
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any, cast
 
@@ -381,6 +382,129 @@ def test_robots_wildcards_and_end_anchors_follow_rfc_9309(
         with pytest.raises(PermanentError, match="robots.txt disallows"):
             _fetch(url, handler)
     assert seen == ["https://news.example.com/robots.txt"] + ([] if not allowed else [url])
+
+
+def _assert_robots_decision(
+    rules: str, url: str, *, allowed: bool, expected_url: str | None = None
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots(200, rules)
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    final_url = expected_url or url
+    if allowed:
+        assert _fetch(url, handler)[0] == final_url
+    else:
+        with pytest.raises(PermanentError, match="robots.txt disallows"):
+            _fetch(url, handler)
+    assert seen == ["https://news.example.com/robots.txt"] + ([] if not allowed else [final_url])
+
+
+@pytest.mark.parametrize(
+    ("rules", "url", "allowed", "expected_url"),
+    [
+        ("User-agent: *\nDisallow: /p/*/draft", "https://news.example.com/p/1/2/draft", False, ""),
+        ("User-agent: *\nDisallow: /p/*/draft", "https://news.example.com/p//draft", False, ""),
+        ("User-agent: *\nDisallow: /p/private", "https://news.example.com/x/p/private", True, ""),
+        (
+            "User-agent: *\nAllow: /p/\nDisallow: /p/public/secret",
+            "https://news.example.com/p/public/secret",
+            False,
+            "",
+        ),
+        ("User-agent: *\nDisallow: /a%20b", "https://news.example.com/a%20b", False, ""),
+        ("User-agent: *\nDisallow: /a%20b", "https://news.example.com/a b", False, ""),
+        ("User-agent: *\nDisallow: /~user", "https://news.example.com/%7Euser", False, ""),
+        ("User-agent: *\nDisallow:", "https://news.example.com/anything", True, ""),
+        (
+            "User-agent: living-kb\nDisallow:\n\nUser-agent: *\nDisallow: /",
+            "https://news.example.com/anything",
+            True,
+            "",
+        ),
+        ("User-agent: *\nDisallow: /a.b", "https://news.example.com/a.b", False, ""),
+        ("User-agent: *\nDisallow: /a.b", "https://news.example.com/axb", True, ""),
+        ("User-agent: *\nDisallow: /a+b", "https://news.example.com/a+b", False, ""),
+        ("User-agent: *\nDisallow: /a+b", "https://news.example.com/aaab", True, ""),
+        ("User-agent: *\nDisallow: /a?b", "https://news.example.com/a%3Fb", False, ""),
+        ("User-agent: *\nDisallow: /a?b", "https://news.example.com/ab", True, ""),
+        ("User-agent: *\nDisallow: /Private", "https://news.example.com/Private", False, ""),
+        ("User-agent: *\nDisallow: /Private", "https://news.example.com/private", True, ""),
+        ("User-agent: *\nDisallow: /", "https://news.example.com", False, ""),
+    ],
+    ids=[
+        "star-crosses-slash",
+        "star-matches-zero-characters",
+        "rules-are-anchored",
+        "longest-rule-wins",
+        "encoded-rule-matches-encoded-path",
+        "encoded-rule-matches-decoded-path",
+        "target-encoding-is-normalised",
+        "empty-disallow-allows-all",
+        "empty-own-group-does-not-inherit-wildcard",
+        "literal-dot-blocks",
+        "literal-dot-does-not-block-other-character",
+        "literal-plus-blocks",
+        "literal-plus-does-not-repeat",
+        "literal-question-mark-blocks",
+        "literal-question-mark-does-not-optionalise",
+        "paths-are-case-sensitive-block",
+        "paths-are-case-sensitive-allow",
+        "empty-url-path-is-root",
+    ],
+)
+def test_robots_matcher_kills_the_reviewers_surviving_mutants(
+    rules: str, url: str, allowed: bool, expected_url: str
+) -> None:
+    _assert_robots_decision(rules, url, allowed=allowed, expected_url=expected_url or None)
+
+
+def test_robots_redirect_location_is_resolved_against_the_current_hop() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        path = request.url.path
+        if path == "/robots.txt":
+            return httpx.Response(302, headers={"Location": "/config/robots.txt"})
+        if path == "/config/robots.txt":
+            return httpx.Response(302, headers={"Location": "final.txt"})
+        if path == "/config/final.txt":
+            return _robots(200, "User-agent: *\nDisallow: /p/deep/post\n")
+        if path == "/final.txt":
+            return _robots()
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    with pytest.raises(PermanentError, match="robots.txt disallows"):
+        _fetch("https://news.example.com/p/deep/post", handler)
+
+    assert seen == [
+        "https://news.example.com/robots.txt",
+        "https://news.example.com/config/robots.txt",
+        "https://news.example.com/config/final.txt",
+    ]
+
+
+@pytest.mark.timeout(2)
+def test_many_wildcards_and_a_long_path_are_matched_quickly() -> None:
+    rules = "User-agent: *\nDisallow: /" + "*a" * 30 + "b\n"
+    url = "https://news.example.com/" + "a" * 3000
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/robots.txt":
+            return _robots(200, rules)
+        return httpx.Response(200, text="<article>a full post</article>")
+
+    start = time.perf_counter()
+    assert _fetch(url, handler)[0] == url
+    assert time.perf_counter() - start < 1.0
+    assert seen == ["https://news.example.com/robots.txt", url]
 
 
 class _ChunkedStream(httpx.AsyncByteStream):
